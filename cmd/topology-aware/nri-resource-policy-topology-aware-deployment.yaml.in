@@ -135,7 +135,7 @@ data:
       ReservedResources:
         CPU: 750m
     logger:
-      Debug: nri-resource-policy,resource-manager,cache,policy
+      Debug: nri-resource-policy,resource-manager,cache,policy,topology-hints
 kind: ConfigMap
 metadata:
   name: nri-resource-policy-config
