@@ -70,7 +70,7 @@ def createGraph(labels, inputFiles, args):
                 add_to_subplots_with_color(df, LABEL_COLORS[key])
                 colorFound = True
                 break
-            
+
         if not colorFound:
             add_to_subplots(df)
 

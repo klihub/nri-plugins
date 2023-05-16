@@ -63,7 +63,7 @@ def processSpansAndTraces(url, start, end, runtime):
 
                 if operationName in result:
                     result[operationName].append(span)
-        
+
         result[key].sort(key=lambda datapoint: datapoint["startTime"])
 
         for datapoint in result[key]:
@@ -83,7 +83,7 @@ def handleQueryOutput(url, csv, start, end, runtime):
             return "csv output written to " + csv
     else:
         return createTextOutputFromResult(processedDict)
-    
+
 
 def main():
     parser = argparse.ArgumentParser(description="Get jaeger tracing data.")
