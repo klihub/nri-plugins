@@ -34,16 +34,20 @@ def createTextOutputFromResult(processedDict):
 
 
 def processSpansAndTraces(url, start, end, runtime):
-    result = {
-        "runtime.v1.RuntimeService/RunPodSandbox": [],
-        "runtime.v1.RuntimeService/CreateContainer": [],
-        "runtime.v1.RuntimeService/StartContainer": [],
-        "runtime.v1.RuntimeService/StopContainer": [],
-        "runtime.v1.RuntimeService/RemoveContainer": [],
-        "runtime.v1.RuntimeService/StopPodSandbox": [],
-        "runtime.v1.RuntimeService/RemovePodSandbox": []
-    }
-    for key in result:
+    result = {}
+    operations = [
+        "runtime.v1.RuntimeService/RunPodSandbox",
+        "runtime.v1.RuntimeService/CreateContainer",
+        "runtime.v1.RuntimeService/StartContainer",
+        "runtime.v1.RuntimeService/StopContainer",
+        "runtime.v1.RuntimeService/RemoveContainer",
+        "runtime.v1.RuntimeService/StopPodSandbox",
+        "runtime.v1.RuntimeService/RemovePodSandbox",
+    ]
+    for key in operations:
+        result[key] = []
+
+    for key in operations:
         output = getQueryOutput(url, key, start, end, runtime)
 
         if output["errors"] != None:
