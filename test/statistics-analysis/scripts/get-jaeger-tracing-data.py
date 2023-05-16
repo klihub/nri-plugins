@@ -39,6 +39,7 @@ def processSpansAndTraces(url, start, end, runtime):
         "runtime.v1.RuntimeService/RunPodSandbox",
         "runtime.v1.RuntimeService/CreateContainer",
         "runtime.v1.RuntimeService/StartContainer",
+        "runtime.v1.RuntimeService/UpdateContainerResources",
         "runtime.v1.RuntimeService/StopContainer",
         "runtime.v1.RuntimeService/RemoveContainer",
         "runtime.v1.RuntimeService/StopPodSandbox",
