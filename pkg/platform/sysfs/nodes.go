@@ -25,7 +25,7 @@ import (
 type Nodes interface {
 	// System returns the System associated with these Nodes.
 	System() System
-	// HasCPU returns IDs of the nodes which hav 'local' or 'close' CPUs associated.
+	// HasCPU returns IDs of the nodes which have 'local' or 'close' CPUs associated.
 	HasCPU() []ID
 	// HasMemory returns IDs of the nodes which have memory attached.
 	HasMemory() []ID

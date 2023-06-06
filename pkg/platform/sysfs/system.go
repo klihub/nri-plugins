@@ -29,6 +29,10 @@ const (
 	UnknownID = idset.UnknownID
 )
 
+var (
+	NewIDSet = idset.NewIDSet
+)
+
 // System provides interfaces for querying information about the underlying
 // system.
 //
@@ -49,6 +53,7 @@ type system struct {
 	fs    *sysFS
 	nodes *sysNodes
 	cpus  *sysCPUs
+	pkgs  *sysPackages
 }
 
 // GetSystem returns the System interface for this sysfs.
@@ -80,6 +85,11 @@ func (s *system) refresh() error {
 		return err
 	}
 
+	err = s.collectSysPackages()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -93,4 +103,8 @@ func (s *system) Nodes() Nodes {
 
 func (s *system) CPUs() CPUs {
 	return s.cpus
+}
+
+func (s *system) Packages() Packages {
+	return s.pkgs
 }
