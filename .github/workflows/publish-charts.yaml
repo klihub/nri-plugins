@@ -1,0 +1,35 @@
+name: Publish Helm charts
+
+on:
+  release:
+    types: [released]
+  
+env:
+  CHARTS_DIR: deployment/helm/resource-management-policies/
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+        contents: write  
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          ref: gh-pages
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Run build script
+        run: ./scripts/build/helm-publisher.sh
+        shell: bash
+
+      - name: Run build script
+        run: ./scripts/build/helm-publisher.sh
+        shell: bash
+
+      - uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Update index.yaml"
