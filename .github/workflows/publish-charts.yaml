@@ -1,9 +1,14 @@
 name: Publish Helm charts
 
+# on:
+#   release:
+#     types: [released]
+
 on:
-  release:
-    types: [released]
-  
+  push:
+    tags:
+      - "v*.*.*"
+
 env:
   CHARTS_DIR: deployment/helm/resource-management-policies/
 
