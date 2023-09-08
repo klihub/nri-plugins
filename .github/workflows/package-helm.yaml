@@ -1,4 +1,4 @@
-name: Publish Helm charts
+name: Package Helm charts
 
 on:
   push:
@@ -7,7 +7,6 @@ on:
 
 env:
   CHARTS_DIR: deployment/helm/resource-management-policies/
-
 
 jobs:
   release:
@@ -26,12 +25,16 @@ jobs:
       - name: Package Helm charts
         run: |
           helm package "$CHARTS_DIR"/*
+          find . -name '*.tgz' -print | while read SRC_FILE; do
+            DEST_FILE=$(echo $SRC_FILE | sed 's/v/helm-chart-v/g')
+            mv $SRC_FILE $DEST_FILE
+            #mv nri-resource-policy-balloons* $(echo nri-resource-policy-balloons* | sed 's/v/helm-chart-v/g') 
+          done
 
-      - name: Upload Helm packages to GitHub
+      - name: Upload Helm packages to GitHub releases
         uses: softprops/action-gh-release@v1
         with:
           name: ${{ github.ref_name }}
           draft: true
           append_body: true
-          files: nri-resource-policy-*.tgz
-          token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          files: nri-resource-policy-*helm-chart*.tgz
