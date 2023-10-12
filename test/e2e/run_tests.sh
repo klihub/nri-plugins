@@ -6,6 +6,7 @@ RUN_SH="${0%/*}/run.sh"
 DEFAULT_DISTRO=${DEFAULT_DISTRO:-"generic/fedora37"}
 
 k8scri=${k8scri:="containerd"}
+cni_plugin=${cni_plugin:="bridge"}
 
 proxy=${proxy:=$https_proxy}
 proxy=${proxy:=$HTTPS_PROXY}
