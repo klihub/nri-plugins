@@ -10,6 +10,7 @@
     - is_containerd_src: false
     - crio_release: "{{ crio_release }}"
     - is_crio_src: false
+    - dns_nameserver: "{{ dns_nameserver }}"
 
   tasks:
     - set_fact:
@@ -27,6 +28,7 @@
         - echo "search  {{ dns_search_domain }}" >> /etc/resolv.conf
         - sed -i "s/DNS=.*$/DNS={{ dns_nameserver }}/" /etc/systemd/resolved.conf
         - sed -i "s/Domains=.*$/Domains={{ dns_search_domain }}/" /etc/systemd/resolved.conf
+      when: dns_nameserver != ""
 
     - name: setup DNS for Ubuntu
       shell: "{{ item }}"
