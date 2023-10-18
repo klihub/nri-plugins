@@ -54,8 +54,21 @@ type Config struct {
 	// allocated and resized so that all topology elements
 	// (packages, dies, numa nodes, cores) have roughly same
 	// amount of allocations. The default is false: balloons are
-	// packed tightly to optimize power efficiency.
+	// packed tightly to optimize power efficiency. The value set
+	// here can be overridden with the balloon type specific
+	// setting with the same name.
 	AllocatorTopologyBalancing bool `json:"allocatorTopologyBalancing"`
+	// PreferSpreadOnPhysicalCores prefers allocating logical CPUs
+	// (possibly hyperthreads) for a balloon from separate physical CPU
+	// cores. This prevents workloads in the balloon from interfering with
+	// themselves as they do not compete on the resources of the same CPU
+	// cores. On the other hand, it allows more interference between
+	// workloads in different balloons. The default is false: balloons
+	// are packed tightly to a minimum number of physical CPU cores. The
+	// value set here is the default for all balloon types, but it can be
+	// overridden with the balloon type specific setting with the same
+	// name.
+	PreferSpreadOnPhysicalCores bool `json:"PreferSpreadOnPhysicalCores,omitempty"`
 	// BallonDefs contains balloon type definitions.
 	BalloonDefs []*BalloonDef `json:"balloonTypes,omitempty"`
 	// Available/allowed (CPU) resources to use.
@@ -128,6 +141,12 @@ type BalloonDef struct {
 	// +kubebuilder:default=high
 	// +kubebuilder:validation:Format:string
 	AllocatorPriority CPUPriority `json:"allocatorPriority"`
+	// PreferSpreadOnPhysicalCores is the balloon type specific
+	// parameter of the policy level parameter with the same name.
+	PreferSpreadOnPhysicalCores *bool `json:"PreferSpreadOnPhysicalCores,omitempty"`
+	// AllocatorTopologyBalancing is the balloon type specific
+	// parameter of the policy level parameter with the same name.
+	AllocatorTopologyBalancing *bool `json:"AllocatorTopologyBalancing,omitempty"`
 	// CpuClass controls how CPUs of a balloon are (re)configured
 	// whenever a balloon is created, inflated or deflated.
 	CpuClass string `json:"cpuClass,omitempty"`
