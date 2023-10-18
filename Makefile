@@ -434,3 +434,86 @@ site-serve: .$(DOCKER_SITE_BUILDER_IMAGE).image.stamp
 	touch $@
 
 docs: site-build
+
+#
+# CRD et. al code generation
+#
+
+CRD_BASE_DIR := config/crd/bases
+HELM_TOP_DIR := deployment/helm
+
+## Location to install dependencies to
+BUILD_AUX ?= $(shell pwd)/build-aux
+LOCALBIN ?= $(BUILD_AUX)/bin
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+## Tool Binaries
+KUSTOMIZE ?= $(LOCALBIN)/kustomize
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+CLIENT_GEN ?= $(LOCALBIN)/client-gen
+
+GIT_CLONE    := git clone
+GIT_CHECKOUT := git checkout
+
+## Tool Versions
+CONTROLLER_TOOLS_VERSION ?= v0.12.0
+CLIENT_GEN_VERSION ?= v0.28.1
+CODE_GENERATOR_REPO ?= https://github.com/kubernetes/code-generator
+CODE_GENERATOR_VERSION ?= v0.28.1
+GENERATE_GROUPS ?= $(BUILD_AUX)/code-generator/generate-groups.sh
+
+.PHONY: controller-gen
+controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary. If wrong version is installed, it will be overwritten.
+$(CONTROLLER_GEN): $(LOCALBIN)
+	test -s $(LOCALBIN)/controller-gen && $(LOCALBIN)/controller-gen --version | grep -q $(CONTROLLER_TOOLS_VERSION) || \
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+.PHONY: client-gen
+client-gen: $(CLIENT_GEN) ## Download client-gen locally if necessary. If wrong version is installed, it will be overwritten.
+$(CLIENT_GEN): $(LOCALBIN)
+	test -s $(LOCALBIN)/client-gen && $(LOCALBIN)/client-gen --version | grep -q $(CLIENT_GEN_VERSION) || \
+	GOBIN=$(LOCALBIN) go install k8s.io/code-generator/cmd/client-gen@$(CLIENT_GEN_VERSION)
+
+.PHONY: $(GENERATE_GROUPS)
+$(GENERATE_GROUPS): ## Clone code-generator locally.
+	test -s $@ || \
+	$(GIT_CLONE) $(CODE_GENERATOR_REPO) -b $(CODE_GENERATOR_VERSION) $(dir $@) && \
+	cd $(dir $@) && \
+	for d in ./cmd/*; do go build $$d; done
+
+generate-manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd paths="./pkg/apis/..." output:crd:artifacts:config=$(CRD_BASE_DIR)
+
+.PHONY: generate
+generate-types: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./pkg/apis/..."
+
+.PHONY: clients
+generate-clients: $(GENERATE_GROUPS)
+	$(GENERATE_GROUPS) client \
+	    github.com/containers/nri-plugins/pkg/generated \
+	    github.com/containers/nri-plugins/pkg/apis \
+	    "config:v1alpha1" --output-base=. \
+	    --go-header-file=./hack/boilerplate.go.txt && \
+	rm -fr pkg/generated && \
+	mv github.com/containers/nri-plugins/pkg/generated pkg && \
+	rm -fr github.com
+
+generate-go:
+	$(Q)$(GO_CMD) generate ./...
+
+generate: generate-go generate-types generate-manifests generate-clients update-helm-crds
+
+.PHONY: update-helm-crds
+update-helm-crds:
+	$(Q)for plugin in $(PLUGINS); do \
+	    plugin="$${plugin#nri-}"; plugin="$${plugin#resource-policy-}"; \
+            helm_dir=$(HELM_TOP_DIR)/$$plugin/crds; \
+	    if [ ! -d "$$helm_dir" ]; then \
+	        echo "No generated CRD found for $$plugin plugin..."; \
+	    else \
+	        echo "Updating Helm chart CRDs for $$plugin plugin..."; \
+	        cp $(CRD_BASE_DIR)/*_$${plugin//-/}configs.yaml $$helm_dir; \
+	    fi; \
+	done
