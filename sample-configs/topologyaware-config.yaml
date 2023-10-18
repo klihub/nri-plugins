@@ -1,0 +1,86 @@
+apiVersion: config.nri/v1alpha1
+kind: TopologyAwareConfig
+metadata:
+  name: node.demo-crio
+  namespace: kube-system
+topologyAware:
+  pinCPU: true
+  pinMemory: true
+  preferIsolatedCPUs: true
+  preferSharedCPUs: false
+  colocatePods: true
+  colocateNamespaces: true
+  reservedPoolNamespaces:
+    - reserved
+    - reserved-node-config
+  reservedResources:
+    cpu: 750m
+common:
+  control:
+    enable:
+      - cpu
+  log:
+    debug:
+      "*": false
+    logSource: true
+    klog:
+      skip_headers: true
+  instrumentation:
+    reportPeriod: 60s
+    samplingRatePerMillion: 1000000
+---
+apiVersion: config.nri/v1alpha1
+kind: TopologyAwareConfig
+metadata:
+  name: group.test
+  namespace: kube-system
+topologyAware:
+  pinCPU: true
+  pinMemory: true
+  preferIsolatedCPUs: true
+  preferSharedCPUs: false
+  colocatePods: true
+  colocateNamespaces: true
+  reservedPoolNamespaces:
+    - reserved
+    - reserved-group-config
+  reservedResources:
+    cpu: 800m
+common:
+  log:
+    debug:
+      "*": true
+    logSource: true
+    klog:
+      skip_headers: true
+  instrumentation:
+    reportPeriod: 60s
+    samplingRatePerMillion: 10000
+---
+apiVersion: config.nri/v1alpha1
+kind: TopologyAwareConfig
+metadata:
+  name: default
+  namespace: kube-system
+topologyAware:
+  pinCPU: true
+  pinMemory: true
+  preferIsolatedCPUs: true
+  preferSharedCPUs: false
+  colocatePods: true
+  colocateNamespaces: true
+  reservedPoolNamespaces:
+    - reserved
+    - reserved-default-config
+  reservedResources:
+    cpu: 750m
+common:
+  log:
+    debug:
+      "*": true
+    logSource: true
+    klog:
+      skip_headers: true
+  instrumentation:
+    reportPeriod: 60s
+    samplingRatePerMillion: 10000
