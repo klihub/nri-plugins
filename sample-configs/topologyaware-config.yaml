@@ -1,0 +1,109 @@
+# Default configuration
+# Used for all nodes without a node-specific or group-specific configuration.
+apiVersion: config.nri/v1alpha1
+kind: TopologyAwareConfig
+metadata:
+  name: default
+# Make sure you put the configuration in the same namespace than your plugin
+# which is kube-system by default.
+#  namespace: kube-system
+topologyAware:
+  # PinCPU: pin containers to selected CPUs.
+  pinCPU: true
+  # PinMemory: pin containers to selected memory.
+  pinMemory: true
+  # PreferIsolatedCPUs: prefer allocating kernel-isolated CPUs for
+  # Guaranteed QoS class containers that ask for 1 full CPU.
+  preferIsolatedCPUs: true
+  # PreferSharedCPUs: prefer shared allocations even for Guaranteed
+  # QoS class containers unless annotated otherwise.
+  preferSharedCPUs: false
+  # ColocatePods: try to colocate all containers within a pod into
+  # the same topology zone.
+  colocatePods: true
+  # ColocateNamespaces: try to colocate all containers within a namespace
+  # into the same topology zone.
+  colocateNamespaces: false
+  # ReservedPoolNamespaces: Additional namespaces to treat like the 'kube-system'
+  # namespace.
+  reservedPoolNamespaces:
+    - special-namespace
+    - extra-reserved-namespace
+  # Resources reserved for the 'kube-system' namespace.
+  reservedResources:
+    cpu: 750m
+common:
+  control:
+    enable:
+      - cpu
+  log:
+    debug:
+      "*": false
+    logSource: true
+    klog:
+      skip_headers: true
+  instrumentation:
+    reportPeriod: 60s
+    samplingRatePerMillion: 1000000
+---
+# Configuration for node 'custom-node0'.
+# Only used for custom-node0.
+apiVersion: config.nri/v1alpha1
+kind: TopologyAwareConfig
+metadata:
+  name: node.custom-node0
+# Make sure you put the configuration in the same namespace than your plugin
+# which is kube-system by default.
+#  namespace: kube-system
+topologyAware:
+  pinCPU: true
+  pinMemory: true
+  preferIsolatedCPUs: true
+  preferSharedCPUs: false
+  colocatePods: false
+  colocateNamespaces: false
+  reservedResources:
+    cpu: 850m
+common:
+  log:
+    debug:
+      "*": true
+    logSource: true
+    klog:
+      skip_headers: true
+  instrumentation:
+    reportPeriod: 60s
+    samplingRatePerMillion: 10000
+---
+# Configuration for group 'custom-group0'.
+# Only used for nodes with label
+#   group.config.nri: custom-group0
+apiVersion: config.nri/v1alpha1
+kind: TopologyAwareConfig
+metadata:
+  name: group.custom-group0
+# Make sure you put the configuration in the same namespace than your plugin
+# which is kube-system by default.
+#  namespace: kube-system
+topologyAware:
+  pinCPU: true
+  pinMemory: true
+  preferIsolatedCPUs: true
+  preferSharedCPUs: false
+  colocatePods: true
+  colocateNamespaces: true
+  reservedPoolNamespaces:
+    - reserved
+    - reserved-default-config
+  reservedResources:
+    cpu: 750m
+common:
+  log:
+    debug:
+      "*": false
+    logSource: true
+    klog:
+      skip_headers: true
+  instrumentation:
+    reportPeriod: 60s
+    samplingRatePerMillion: 10000

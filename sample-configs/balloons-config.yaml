@@ -1,0 +1,248 @@
+# Default configuration
+# Used for all nodes without a node-specific or group-specific configuration.
+apiVersion: config.nri/v1alpha1
+kind: BalloonsConfig
+metadata:
+  name: default
+# Make sure you put the configuration in the same namespace than your plugin
+# which is kube-system by default.
+#  namespace: kube-system
+balloons:
+  reservedResources:
+    cpu: 750m
+  pinCPU: true
+  pinMemory: true
+  idleCPUClass: normal
+  allocatorTopologyBalancing: true
+  balloonTypes:
+  - name: default
+    namespaces:
+      - default
+    minCPUs: 1
+    allocatorPriority: normal
+    shareIdleCPUsInSame: system
+  reservedPoolNamespaces:
+    - kube-system
+common:
+  log:
+    debug:
+      policy: true
+#      '*': true
+#    logSource: true
+#      klog:
+#        skip_headers: true
+---
+# Configuration for node 'custom-node0'.
+# Only used for custom-node0.
+apiVersion: config.nri/v1alpha1
+kind: BalloonsConfig
+metadata:
+  name: node.custom-node0
+# Make sure you put the configuration in the same namespace than your plugin
+# which is kube-system by default.
+#  namespace: kube-system
+balloons:
+  # Use only 15 CPUs in total, leave cpu0 for other than Kubernetes
+  # processes.
+  availableResources:
+    cpu: cpuset:1-15
+  # Reserve one of our CPUs (cpu15) for kube-system tasks.
+  reservedResources:
+    cpu: cpuset:15
+
+  # PinCPU: allow containers to use only the CPUs in their balloons.
+  pinCPU: true
+  # PinMemory: allow containers to use only the closest memory to
+  # the CPUs in their balloons.
+  pinMemory: true
+  # IdleCPUClass: how to configure CPUs that are not included in any
+  # of the balloons.
+  idleCPUClass: idle
+  balloonTypes:
+    - name: "full-core-turbo"
+      # MinCPUs: minimum number of logical cores in every balloon
+      # instance of this type.
+      # The default is 0.
+      minCPUs: 2
+      # MaxCPUs: maximum number of logical cores in every balloon
+      # instance of this type.
+      # The default is 0 (unlimited).
+      maxCPUs: 2
+    # CPUClass: how to configure CPUs of these balloons.
+      # The default is "".
+      cpuClass: "turbo"
+      # Namespaces: assign pods in listed namespaces to these
+      # balloons, even if there is no explicit annotation:
+      # balloon.balloons.nri-resmgr.intel.com: full-core-turbo
+      # The default is to assign only annotated pods.
+      namespaces:
+        - "highperf"
+      # AllocatorPriotity: CPU allocator priority (high, normal, low, none):
+      # Affects the performance/type of CPUs that are selected into the
+      # balloon. CPUs for static balloon instances (MinBalloons > 0) with
+      # highest AllocatorPriority are reserved first.
+      # The default is high
+      allocatorPriority: low
+      # MinBalloons: how many balloon instances of this type are always
+      # kept in the system, even if there would not be workloads to them.
+      # The default is 0.
+      minBalloons: 2
+      # PreferNewBalloons: prefer creating a new balloon for
+      # separate pods, even if their CPU requirements would allow
+      # putting them in the same balloon.
+      # The default is: false.
+      preferNewBalloons: true
+      # PreferPerNamespaceBalloon: if true, containers in the same
+      # namespace are preferrably placed in the same balloon, and
+      # containers in different namespaces to different
+      # balloons. The default is false: namespaces have no effect on
+      # placement.
+      preferPerNamespaceBalloon: false
+      # PreferSpreadingPods: if true, containers of single pod can
+      # be assigned in different balloons, based on which balloons
+      # have most free CPU resources.
+      # The default is: false: prefer running containers of a same
+      # pod in the same balloon(s).
+      preferSpreadingPods: false
+
+    - name: "socket-size"
+      maxCPUs: 8
+      allocatorPriority: low
+      namespaces:
+        - "default"
+      cpuClass: "normal"
+
+common:
+  control:
+    enable:
+      - cpu
+    # CPU controller configuration specifies CPU class properties. CPUs of
+    # each balloon are configured based on its CPUClass. If a balloon has
+    # no CPUClass, the properties of the default class are applied.
+    cpu:
+      classes:
+        default:
+          minFreq: 800
+          maxFreq: 1600
+        turbo:
+          minFreq: 3300
+          maxFreq: 3600
+        normal:
+          minFreq: 800
+          maxFreq: 2400
+  instrumentation:
+    # The balloons policy exports containers running in each balloon,
+    # and cpusets of balloons. Accessible in command line:
+    # curl --silent http://localhost:8891/metrics
+    httpEndpoint: :8891
+    prometheusExport: true
+  log:
+    debug:
+      policy: true
+---
+# Configuration for group 'custom-group0'.
+# Only used for nodes with label
+#   group.config.nri: custom-group0
+apiVersion: config.nri/v1alpha1
+kind: BalloonsConfig
+metadata:
+  name: group.custom-group0
+# Make sure you put the configuration in the same namespace than your plugin
+# which is kube-system by default.
+#  namespace: kube-system
+balloons:
+  # Use only 14 CPUs in total, leave cpu{0,1} (sibling hyperthreads) for
+  # other than Kubernetes processes.
+  availableResources:
+    cpu: cpuset:2-15
+  # Reserve two CPUs, cpu{14,15} (sibling hyperthreads) for kube-system tasks.
+  reservedResources:
+    cpu: cpuset:14-15
+
+  # PinCPU: allow containers to use only the CPUs in their balloons.
+  pinCPU: true
+  # PinMemory: allow containers to use only the closest memory to
+  # the CPUs in their balloons.
+  pinMemory: true
+  # IdleCPUClass: how to configure CPUs that are not included in any
+  # of the balloons.
+  idleCPUClass: idle
+  balloonTypes:
+    - name: "full-core-turbo"
+      # MinCPUs: minimum number of logical cores in every balloon
+      # instance of this type.
+      # The default is 0.
+      minCPUs: 2
+      # MaxCPUs: maximum number of logical cores in every balloon
+      # instance of this type.
+      # The default is 0 (unlimited).
+      maxCPUs: 2
+    # CPUClass: how to configure CPUs of these balloons.
+      # The default is "".
+      cpuClass: "turbo"
+      # Namespaces: assign pods in listed namespaces to these
+      # balloons, even if there is no explicit annotation:
+      # balloon.balloons.nri-resmgr.intel.com: full-core-turbo
+      # The default is to assign only annotated pods.
+      namespaces:
+        - "highperf"
+      # AllocatorPriotity: CPU allocator priority (high, normal, low, none):
+      # Affects the performance/type of CPUs that are selected into the
+      # balloon. CPUs for static balloon instances (MinBalloons > 0) with
+      # highest AllocatorPriority are reserved first.
+      # The default is high
+      allocatorPriority: low
+      # MinBalloons: how many balloon instances of this type are always
+      # kept in the system, even if there would not be workloads to them.
+      # The default is 0.
+      minBalloons: 2
+      # PreferNewBalloons: prefer creating a new balloon for
+      # separate pods, even if their CPU requirements would allow
+      # putting them in the same balloon.
+      # The default is: false.
+      preferNewBalloons: true
+      # PreferPerNamespaceBalloon: if true, containers in the same
+      # namespace are preferrably placed in the same balloon, and
+      # containers in different namespaces to different
+      # balloons. The default is false: namespaces have no effect on
+      # placement.
+      preferPerNamespaceBalloon: false
+      # PreferSpreadingPods: if true, containers of single pod can
+      # be assigned in different balloons, based on which balloons
+      # have most free CPU resources.
+      # The default is: false: prefer running containers of a same
+      # pod in the same balloon(s).
+      preferSpreadingPods: false
+
+    - name: "socket-size"
+      maxCPUs: 8
+      allocatorPriority: low
+      namespaces:
+        - "default"
+      cpuClass: "normal"
+
+common:
+  control:
+    # CPU controller configuration specifies CPU class properties. CPUs of
+    # each balloon are configured based on its CPUClass. If a balloon has
+    # no CPUClass, the properties of the default class are applied.
+    cpu:
+      classes:
+        default:
+          minFreq: 800
+          maxFreq: 1600
+        turbo:
+          minFreq: 3300
+          maxFreq: 3600
+        normal:
+          minFreq: 800
+          maxFreq: 2400
+  instrumentation:
+    # The balloons policy exports containers running in each balloon,
+    # and cpusets of balloons. Accessible in command line:
+    # curl --silent http://localhost:8891/metrics
+    httpEndpoint: :8891
+    prometheusExport: true
+  log:
+    debug:
+      policy: true
