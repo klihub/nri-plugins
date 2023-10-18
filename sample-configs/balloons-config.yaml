@@ -1,0 +1,95 @@
+apiVersion: config.nri/v1alpha1
+kind: BalloonsConfig
+metadata:
+  name: node.demo-crio
+  namespace: kube-system
+balloons:
+  reservedResources:
+    cpu: 750m
+  pinCPU: true
+  pinMemory: true
+  idleCPUClass: normal
+  allocatorTopologyBalancing: true
+  balloonTypes:
+  - name: default
+    namespaces:
+      - default
+    minCPUs: 1
+    allocatorPriority: normal
+    minBalloons: 0
+    shareIdleCPUsInSame: system
+  reservedPoolNamespaces:
+    - kube-system
+common:
+  log:
+    debug:
+      "*": false
+    logSource: true
+    klog:
+      skip_headers: true
+---
+apiVersion: config.nri/v1alpha1
+kind: BalloonsConfig
+metadata:
+  name: group.test
+  namespace: kube-system
+balloons:
+  pinCPU: true
+  pinMemory: true
+  idleCPUClass: normal
+  allocatorTopologyBalancing: true
+  balloonTypes:
+  - name: default
+    namespaces:
+      - default
+      - test-ns1
+    minCPUs: 1
+    maxCPUs: 4
+    allocatorPriority: normal
+    minBalloons: 1
+    shareIdleCPUsInSame: system
+  reservedPoolNamespaces:
+    - reserved1
+    - kube-system
+    - reserved2
+  reservedResources:
+    cpu: 800m
+common:
+  log:
+    debug:
+      "*": false
+    logSource: true
+    klog:
+      skip_headers: true
+---
+apiVersion: config.nri/v1alpha1
+kind: BalloonsConfig
+metadata:
+  name: default
+  namespace: kube-system
+balloons:
+  pinCPU: true
+  pinMemory: true
+  idleCPUClass: normal
+  allocatorTopologyBalancing: true
+  balloonTypes:
+  - name: default
+    namespaces:
+      - default
+      - test1
+      - test2
+    minCPUs: 1
+    maxCPUs: 3
+    allocatorPriority: normal
+    minBalloons: 0
+    maxBalloons: 2
+    shareIdleCPUsInSame: system
+  reservedResources:
+    cpu: 700m
+common:
+  log:
+    debug:
+      "*": true
+    logSource: true
+    klog:
+      skip_headers: true
