@@ -22,10 +22,11 @@ import (
 
 	"github.com/containers/nri-plugins/pkg/instrumentation"
 
-	pkgcfg "github.com/containers/nri-plugins/pkg/config"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	"github.com/containers/nri-plugins/pkg/resmgr/control"
+
+	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control"
 )
 
 const (
@@ -50,11 +51,7 @@ const (
 type testctl struct {
 	sync.Mutex `json:"-"` // we're lockable
 	Log        map[string][]string
-	config     *config
-	configured bool
-}
-
-type config struct {
+	registered bool
 }
 
 var log logger.Logger = logger.NewLogger(E2ETestController)
@@ -66,35 +63,16 @@ var singleton *testctl
 func getE2ETestController() *testctl {
 	if singleton == nil {
 		singleton = &testctl{}
-		singleton.config = singleton.defaultOptions().(*config)
 		singleton.Log = make(map[string][]string)
 	}
 	return singleton
 }
 
-// Callback for runtime configuration notifications.
-func (ctl *testctl) configNotify(event pkgcfg.Event, source pkgcfg.Source) error {
-	if !ctl.configured {
-		// We don't want to configure until the controller has been fully
-		// started and initialized. We will configure on Start(), anyway.
-		return nil
-	}
-
-	log.Info("configuration update, applying new config")
-	return ctl.configure()
-}
-
 // Start initializes the controller for enforcing decisions.
-func (ctl *testctl) Start(cache cache.Cache) error {
+func (ctl *testctl) Start(cache cache.Cache, cfg *cfgapi.Config) error {
 	log.Debug("Start called")
 
-	if err := ctl.configure(); err != nil {
-		// Just print an error. A config update later on may be valid.
-		log.Error("failed apply /cpuinitial configuration: %v", err)
-	}
-
-	pkgcfg.GetModule(ConfigModuleName).AddNotify(getE2ETestController().configNotify)
-
+	ctl.registerHandler()
 	ctl.Log[controllerEvent] = append(ctl.Log[controllerEvent], "Start")
 
 	return nil
@@ -158,22 +136,16 @@ func (ctl *testctl) dumpE2ETestControllerState(w http.ResponseWriter, req *http.
 	fmt.Fprintf(w, "%s\r\n", data)
 }
 
-func (ctl *testctl) configure() error {
-	if ctl.configured == false {
-		mux := instrumentation.HTTPServer().GetMux()
-		mux.HandleFunc("/e2e-test-controller-state", ctl.dumpE2ETestControllerState)
-		ctl.configured = true
+func (ctl *testctl) registerHandler() {
+	if ctl.registered {
+		return
 	}
-
-	return nil
-}
-
-func (ctl *testctl) defaultOptions() interface{} {
-	return &config{}
+	mux := instrumentation.HTTPServer().GetMux()
+	mux.HandleFunc("/e2e-test-controller-state", ctl.dumpE2ETestControllerState)
+	ctl.registered = true
 }
 
 // Register us as a controller.
 func init() {
 	control.Register(E2ETestController, "Test controller", getE2ETestController())
-	pkgcfg.Register(ConfigModuleName, "Test control", getE2ETestController().config, getE2ETestController().defaultOptions)
 }
