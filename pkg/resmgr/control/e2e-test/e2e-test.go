@@ -22,10 +22,11 @@ import (
 
 	"github.com/containers/nri-plugins/pkg/instrumentation"
 
-	pkgcfg "github.com/containers/nri-plugins/pkg/config"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	"github.com/containers/nri-plugins/pkg/resmgr/control"
+
+	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control"
 )
 
 const (
@@ -72,28 +73,9 @@ func getE2ETestController() *testctl {
 	return singleton
 }
 
-// Callback for runtime configuration notifications.
-func (ctl *testctl) configNotify(event pkgcfg.Event, source pkgcfg.Source) error {
-	if !ctl.configured {
-		// We don't want to configure until the controller has been fully
-		// started and initialized. We will configure on Start(), anyway.
-		return nil
-	}
-
-	log.Info("configuration update, applying new config")
-	return ctl.configure()
-}
-
 // Start initializes the controller for enforcing decisions.
-func (ctl *testctl) Start(cache cache.Cache) error {
+func (ctl *testctl) Start(cache cache.Cache, cfg *cfgapi.Config) error {
 	log.Debug("Start called")
-
-	if err := ctl.configure(); err != nil {
-		// Just print an error. A config update later on may be valid.
-		log.Error("failed apply /cpuinitial configuration: %v", err)
-	}
-
-	pkgcfg.GetModule(ConfigModuleName).AddNotify(getE2ETestController().configNotify)
 
 	ctl.Log[controllerEvent] = append(ctl.Log[controllerEvent], "Start")
 
@@ -175,5 +157,4 @@ func (ctl *testctl) defaultOptions() interface{} {
 // Register us as a controller.
 func init() {
 	control.Register(E2ETestController, "Test controller", getE2ETestController())
-	pkgcfg.Register(ConfigModuleName, "Test control", getE2ETestController().config, getE2ETestController().defaultOptions)
 }
