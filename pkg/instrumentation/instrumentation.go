@@ -20,6 +20,7 @@ import (
 
 	promcli "github.com/prometheus/client_golang/prometheus"
 
+	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/instrumentation"
 	"github.com/containers/nri-plugins/pkg/http"
 	"github.com/containers/nri-plugins/pkg/instrumentation/metrics"
 	"github.com/containers/nri-plugins/pkg/instrumentation/tracing"
@@ -34,6 +35,8 @@ const (
 )
 
 var (
+	// Our runtime configuration.
+	cfg = &cfgapi.Config{}
 	// Our logger instance.
 	log = logger.NewLogger("instrumentation")
 	// Our HTTP server instance.
@@ -112,24 +115,24 @@ func startHTTPServer() error {
 	if srv == nil {
 		return nil
 	}
-	return srv.Start(opt.HTTPEndpoint)
+	return srv.Start(cfg.HTTPEndpoint)
 }
 
 func startTracing() error {
 	return tracing.Start(
 		tracing.WithServiceName(ServiceName),
 		tracing.WithIdentity(identity...),
-		tracing.WithCollectorEndpoint(opt.TracingCollector),
-		tracing.WithSamplingRatio(opt.Sampling.Ratio()),
+		tracing.WithCollectorEndpoint(cfg.TracingCollector),
+		tracing.WithSamplingRatio(float64(cfg.SamplingRatePerMillion)/float64(1000000)),
 	)
 }
 
 func startMetrics() error {
 	return metrics.Start(
 		GetHTTPMux(),
-		metrics.WithExporterDisabled(!opt.PrometheusExport),
+		metrics.WithExporterDisabled(!cfg.PrometheusExport),
 		metrics.WithServiceName(ServiceName),
-		metrics.WithPeriod(opt.ReportPeriod),
+		metrics.WithPeriod(cfg.ReportPeriod.Duration),
 	)
 }
 
@@ -159,6 +162,16 @@ func reconfigure() error {
 
 	stop()
 	return start()
+}
+
+func Reconfigure(newCfg *cfgapi.Config) error {
+	cfg = newCfg
+
+	if err := reconfigure(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // instrumentationError produces a formatted instrumentation-specific error.
