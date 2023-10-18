@@ -1,0 +1,205 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.12.0
+  name: templateconfigs.config.nri
+spec:
+  group: config.nri
+  names:
+    kind: TemplateConfig
+    listKind: TemplateConfigList
+    plural: templateconfigs
+    singular: templateconfig
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: TemplateConfig represents the configuration for the template
+          policy.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          common:
+            properties:
+              control:
+                properties:
+                  cpu:
+                    properties:
+                      classes:
+                        additionalProperties:
+                          properties:
+                            energyPerformancePreference:
+                              description: EnergyPerformancePreference for CPUs in
+                                this class.
+                              type: integer
+                            maxFreq:
+                              description: MaxFreq is the maximum frequency for this
+                                class.
+                              type: integer
+                            minFreq:
+                              description: MinFreq is the minimum frequency for this
+                                class.
+                              type: integer
+                            uncoreMaxFreq:
+                              description: UncoreMaxFreq is the maximum uncore frequency
+                                for this class.
+                              type: integer
+                            uncoreMinFreq:
+                              description: UncoreMinFreq is the minimum uncore frequency
+                                for this class.
+                              type: integer
+                          required:
+                          - maxFreq
+                          - minFreq
+                          type: object
+                        type: object
+                    required:
+                    - classes
+                    type: object
+                  enable:
+                    items:
+                      type: string
+                    type: array
+                type: object
+              instrumentation:
+                description: Config provides runtime configuration for instrumentation.
+                properties:
+                  httpEndpoint:
+                    description: HTTPEndpoint is the address our HTTP server listens
+                      on. This endpoint is used to expose Prometheus metrics among
+                      other things.
+                    example: :8891
+                    type: string
+                  prometheusExport:
+                    description: PrometheusExport enables exporting /metrics for Prometheus.
+                    type: boolean
+                  reportPeriod:
+                    description: ReportPeriod is the interval between reporting aggregated
+                      metrics.
+                    format: duration
+                    type: string
+                  samplingRatePerMillion:
+                    description: SamplingRatePerMillion is the number of samples to
+                      collect per million spans.
+                    example: 100000
+                    type: integer
+                  tracingCollector:
+                    description: 'TracingCollector defines the external endpoint for
+                      tracing data collection. Endpoints are specified as full URLs,
+                      or as plain URL schemes which then imply scheme-specific defaults.
+                      The supported schemes and their default URLs are: - otlp-http,
+                      http: localhost:4318 - otlp-grpc, grpc: localhost:4317 - jaeger:
+                      $OTEL_EXPORTER_JAEGER_ENDPOINT or http://localhost:14268/api/traces'
+                    example: otlp-http://localhost:4318
+                    type: string
+                type: object
+              log:
+                properties:
+                  debug:
+                    additionalProperties:
+                      type: boolean
+                    description: Debug controls which log sources produce debug messages.
+                    type: object
+                  klog:
+                    description: Klog configures klog-specific options.
+                    properties:
+                      add_dir_header:
+                        type: boolean
+                      alsologtostderr:
+                        type: boolean
+                      log_backtrace_at:
+                        type: string
+                      log_dir:
+                        type: string
+                      log_file:
+                        type: string
+                      log_file_max_size:
+                        format: int64
+                        type: integer
+                      logtostderr:
+                        type: boolean
+                      one_output:
+                        type: boolean
+                      skip_headers:
+                        type: boolean
+                      skip_log_headers:
+                        type: boolean
+                      stderrthreshold:
+                        type: string
+                      v:
+                        type: integer
+                      vmodule:
+                        type: string
+                    type: object
+                  logSource:
+                    description: LogSource controls if messages are prefixed with
+                      the logger source.
+                    type: boolean
+                type: object
+            type: object
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          status:
+            properties:
+              nodes:
+                additionalProperties:
+                  properties:
+                    errors:
+                      description: Error can provide further details of a configuration
+                        error.
+                      type: string
+                    generation:
+                      description: Generation is the generation the configuration
+                        this status was set for.
+                      format: int64
+                      type: integer
+                    status:
+                      description: Status of activating the configuration on this
+                        node.
+                      enum:
+                      - Success
+                      - Failure
+                      type: string
+                    timestamp:
+                      description: Last time of success/failure.
+                      format: date-time
+                      type: string
+                  required:
+                  - generation
+                  - status
+                  type: object
+                type: object
+            required:
+            - nodes
+            type: object
+          template:
+            properties:
+              availableResources:
+                additionalProperties:
+                  type: string
+                type: object
+              reservedResources:
+                additionalProperties:
+                  type: string
+                type: object
+            required:
+            - reservedResources
+            type: object
+        required:
+        - template
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
