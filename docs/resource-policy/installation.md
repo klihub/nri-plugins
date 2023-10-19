@@ -120,11 +120,7 @@ Note: this removes DaemonSet, ConfigMap, CustomResourceDefinition, and RBAC-rela
 
 ## Available parameters
 
-To know what are the available Helm configuration options for currently available Helm charts, you can check:
-- [balloons parameters](../../deployment/helm/balloons/README.md)
-- [memory-qos parameters](../../deployment/helm/memory-qos/README.md)
-- [memtierd parameters](../../deployment/helm/memtierd/README.md)
-- [topology-aware parameters](../../deployment/helm/topology-aware/README.md)
+See the documentation of our [Helm charts](../helm/index.md) the available Helm configuration options
 
 ## Manual installation
 
