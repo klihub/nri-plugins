@@ -27,6 +27,17 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Git-check trailing whitespace errors
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          git fetch -q origin ${{ github.base_ref }}
+          if git diff-index --check origin/${{ github.base_ref }} --; then
+              echo "OK, no whitespace errors"
+          else
+              echo "This PR would introduce trailing whitespace errors."
+              echo "Please fix them and update the PR."
+              exit 1
+          fi
       - name: make verify
         run: |
           make verify
