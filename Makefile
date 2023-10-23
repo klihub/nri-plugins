@@ -23,6 +23,8 @@ ifdef IMAGE_REPO
     override IMAGE_REPO := $(IMAGE_REPO)/
 endif
 
+# Test WS-error....
+
 # Determine binary version and buildid.
 BUILD_VERSION := $(shell scripts/build/get-buildid --version --shell=no)
 BUILD_BUILDID := $(shell scripts/build/get-buildid --buildid --shell=no)
