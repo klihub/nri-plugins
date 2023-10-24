@@ -41,8 +41,8 @@ spec:
           args:
             - --host-root
             - /host
-            - --fallback-config
-            - /etc/nri-resource-policy/nri-resource-policy.cfg
+            - --config-namespace
+            - {{ .Release.Namespace }}
             - --pid-file
             - /tmp/nri-resource-policy.pid
             - -metrics-interval
@@ -74,8 +74,6 @@ spec:
             mountPath: /host/sys
           - name: resource-policysockets
             mountPath: /var/run/nri-resource-policy
-          - name: resource-policyconfig
-            mountPath: /etc/nri-resource-policy
           - name: nrisockets
             mountPath: /var/run/nri
       volumes:
@@ -90,9 +88,6 @@ spec:
       - name: resource-policysockets
         hostPath:
           path: /var/run/nri-resource-policy
-      - name: resource-policyconfig
-        configMap:
-          name: nri-resource-policy-config.default
       - name: nrisockets
         hostPath:
           path: /var/run/nri

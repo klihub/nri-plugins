@@ -8,10 +8,23 @@ image:
   #tag: unstable
   pullPolicy: Always
 
-config:
-  policy:
-    ReservedResources:
-      cpu: 750m
+policyConfig:
+  reservedResources:
+    cpu: 750m
+
+commonConfig:
+  control:
+    enable:
+      - cpu
+  log:
+    debug:
+      "*": false
+    logSource: true
+    klog:
+      skip_headers: true
+  instrumentation:
+    reportPeriod: 60s
+    samplingRatePerMillion: 0
 
 hostPort: 8891
 
