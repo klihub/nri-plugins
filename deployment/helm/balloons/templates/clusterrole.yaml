@@ -22,3 +22,19 @@ rules:
   - list
   - update
   - delete
+- apiGroups:
+  - config.nri
+  resources:
+  - balloonsconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - config.nri
+  resources:
+  - balloonsconfigs/status
+  verbs:
+  - get
+  - update
+  - patch

@@ -1,0 +1,11 @@
+apiVersion: config.nri/v1alpha1
+kind: BalloonsConfig
+metadata:
+  name: default
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "balloons-plugin.labels" . | nindent 4 }}
+balloons:
+  {{- toYaml .Values.config.policy | nindent 2 }}
+common:
+  {{- toYaml .Values.config.common | nindent 2 }}

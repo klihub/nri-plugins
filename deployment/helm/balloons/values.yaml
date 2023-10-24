@@ -10,8 +10,35 @@ image:
 
 config:
   policy:
-    ReservedResources:
+    reservedResources:
       cpu: 750m
+    idleCPUClass: normal
+    allocatorTopologyBalancing: true
+    balloonTypes:
+    - name: default
+      namespaces:
+        - default
+      minCPUs: 1
+      minBalloons: 0
+      allocatorPriority: normal
+      shareIdleCPUsInSame: system
+    reservedPoolNamespaces:
+      - kube-system
+  common:
+    control:
+      enable:
+        - cpu
+    log:
+      debug:
+        "*": false
+      logSource: true
+      klog:
+        skip_headers: true
+    instrumentation:
+      reportPeriod: 60s
+      samplingRatePerMillion: 0
+  test:
+    enableAPIs: false
 
 hostPort: 8891
 
@@ -21,7 +48,6 @@ resources:
 
 nri:
   patchRuntimeConfig: false
-
 
 initContainerImage:
   name: ghcr.io/containers/nri-plugins/nri-config-manager
