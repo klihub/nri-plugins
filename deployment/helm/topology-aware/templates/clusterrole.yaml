@@ -22,3 +22,20 @@ rules:
   - list
   - update
   - delete
+- apiGroups:
+  - config.nri
+  resources:
+  - topologyawareconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - config.nri
+  resources:
+  - topologyawareconfigs/status
+  verbs:
+  - get
+  - list
+  - update
+  - patch
