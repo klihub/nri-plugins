@@ -41,8 +41,8 @@ spec:
           args:
             - --host-root
             - /host
-            - --fallback-config
-            - /etc/nri-resource-policy/nri-resource-policy.cfg
+            - --config-namespace
+            - {{ .Release.Namespace }}
             - --pid-file
             - /tmp/nri-resource-policy.pid
             - -metrics-interval
@@ -57,6 +57,10 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: spec.nodeName
+          {{- if .Values.plugin.enableTestAPIs }}
+          - name: ENABLE_TEST_APIS
+            value: "1"
+          {{- end }}
           image: {{ .Values.image.name }}:{{ .Values.image.tag | default .Chart.AppVersion }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
@@ -74,8 +78,6 @@ spec:
             mountPath: /host/sys
           - name: resource-policysockets
             mountPath: /var/run/nri-resource-policy
-          - name: resource-policyconfig
-            mountPath: /etc/nri-resource-policy
           - name: nrisockets
             mountPath: /var/run/nri
       volumes:
@@ -90,9 +92,6 @@ spec:
       - name: resource-policysockets
         hostPath:
           path: /var/run/nri-resource-policy
-      - name: resource-policyconfig
-        configMap:
-          name: nri-resource-policy-config.default
       - name: nrisockets
         hostPath:
           path: /var/run/nri
