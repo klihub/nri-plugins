@@ -1,5 +1,6 @@
-terminate nri-resource-policy
-launch nri-resource-policy
+helm-terminate
+nri_resource_policy_cfg=$(instantiate nri-resource-policy.cfg)
+helm-launch topology-aware
 
 cleanup-test-pods() {
     # Make sure all the pods in default namespace are cleared so we get a fresh start
@@ -127,4 +128,4 @@ verify `# every container is placed on a single node (no socket, no root)` \
 
 cleanup-test-pods
 
-terminate nri-resource-policy
+helm-terminate

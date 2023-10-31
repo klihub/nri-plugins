@@ -1,8 +1,9 @@
 # Test resource allocation / free on different container exit and
 # restart scenarios.
 
-terminate nri-resource-policy
-launch nri-resource-policy
+helm-terminate
+nri_resource_policy_cfg=$(instantiate nri-resource-policy.cfg)
+helm-launch topology-aware
 
 # Make sure all the pods in default namespace are cleared so we get a fresh start
 vm-command "kubectl delete pods --all --now"
@@ -38,4 +39,4 @@ verify '"pod0c0" not in cpus'
     error "pod0c0 expected to disappear from allocations"
 }
 
-terminate nri-resource-policy
+helm-terminate

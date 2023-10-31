@@ -7,12 +7,12 @@ cleanup-test-pods() {
 }
 cleanup-test-pods
 
-terminate nri-resource-policy
+helm-terminate
 
 AVAILABLE_CPU="cpuset:8-11"
 RESERVED_CPU="cpuset:10-11"
-nri_resource_policy_cfg=$(instantiate nri-resource-policy-reserved-annotations.cfg)
-launch nri-resource-policy
+nri_resource_policy_cfg=$(instantiate nri-resource-policy.cfg)
+helm-launch topology-aware
 
 ANNOTATIONS='prefer-reserved-cpus.resource-policy.nri.io/pod: "true"'
 CONTCOUNT=1 create reserved-annotated
@@ -27,4 +27,4 @@ verify 'cpus["pod1c0"] == {"cpu08"}'
 
 cleanup-test-pods
 
-terminate nri-resource-policy
+helm-terminate
