@@ -371,6 +371,101 @@ terminate() { # script API
     esac
 }
 
+helm-launch() { # script API
+    # Usage: helm-launch TARGET
+    #
+    # Launch the given target plugin using helm. Start port-forwarding and log
+    # collection for the plugin.
+    #
+    # Supported TARGETs:
+    #     topology-aware, balloons: launch the given NRI resource policy plugin on VM.
+    #
+    # Environment variables:
+    #     nri_resource_policy_cfg: configuration helm override for the plugin
+    #     daemonset_name: name of the DaemonSet to wait for
+    #     container_name: name of the container to collect logs for
+    #         default: nri-resource-policy-$TARGET
+    #     helm_name: helm installation name to use
+    #         default: test
+    #     launch_timeout: timeout to wait for DaemonSet to become available
+    #         default: 20s
+    #
+    # Example:
+    #     nri_resource_policy_cfg=$(instantiate config.yaml) helm-launch balloons
+    #
+
+    local ds_name="${daemonset_name:-}" ctr_name="${container_name:-nri-resource-policy-$1}"
+    local helm_name="${helm_name:-test}" timeout="${launch_timeout:-20s}"
+    local plugin="$1"
+    shift
+
+    host-command "$SCP \"$nri_resource_policy_cfg\" $VM_HOSTNAME:" ||
+        command-error "copying \"$nri_resource_policy_cfg\" to VM failed"
+
+    vm-command "helm install --atomic -n kube-system $helm_name ./helm/$plugin \
+             --values=`basename ${nri_resource_policy_cfg}` \
+             --set image.name=localhost/$plugin \
+             --set image.tag=testing \
+             --set image.pullPolicy=Never \
+             --set resources.cpu=50m \
+             --set resources.memory=256Mi \
+             --set plugin.enableTestAPIs=true" ||
+        error "failed to helm install/start plugin $plugin"
+
+    case "$timeout" in
+        ""|"0"|"none")
+            timeout="0"
+            ;;
+    esac
+
+    if [ -z "$ds_name" ]; then
+        case "$plugin" in
+            *topology*aware*)
+                ds_name=nri-resource-policy-topology-aware
+                ;;
+            *balloons*)
+                ds_name=nri-resource-policy-balloons
+                ;;
+            *)
+                error "Can't wait for plugin $plugin to start, daemonset_name not set"
+                return 0
+                ;;
+        esac
+    fi
+
+    vm-command "kubectl wait -n kube-system ds/${ds_name} --timeout=$timeout \
+             --for=jsonpath='{.status.numberAvailable}'=1" || \
+        error "Timeout while waiting daemonset/${ds_name} to be available"
+
+    vm-start-log-collection -n kube-system ds/$ds_name -c $ctr_name
+    vm-port-forward-enable
+}
+
+helm-terminate() { # script API
+    # Usage: helm-terminate
+    #
+    # Stop a helm-launched plugin.
+    #
+    # Environment variables:
+    #     helm_name: helm installation name to stop,
+    #         default: test
+    #
+    # Example:
+    #     helm_name=custom-name helm-terminate
+    #
+
+    local helm_name="${helm_name:-test}"
+
+    vm-command "helm list -n kube-system | grep -q ^$helm_name"
+    if [ "$?" != "0" ]; then
+        return 0
+    fi
+    vm-command "helm uninstall -n kube-system test --wait --timeout 20s"
+    vm-port-forward-disable
+}
+
+
+
 declare -a pulled_images_on_vm
 create() { # script API
     # Usage: [VAR=VALUE][n=COUNT] create TEMPLATE_NAME

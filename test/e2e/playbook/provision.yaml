@@ -79,6 +79,7 @@
           - kubeadm
           - kubectl
           - systemd-container
+          - helm
         state: present
 
     - name: install apt packages
