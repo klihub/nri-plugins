@@ -113,7 +113,7 @@ type NodeStatus struct {
 	// Generation is the generation the configuration this status was set for.
 	Generation int64 `json:"generation"`
 	// Error can provide further details of a configuration error.
-	Error string `json:"errors,omitempty"`
+	Error *string `json:"errors,omitempty"`
 	// Last time of success/failure.
 	Timestamp metav1.Time `json:"timestamp,omitempty"`
 }
@@ -130,9 +130,14 @@ func NewNodeStatus(err error, generation int64) *NodeStatus {
 	}
 	if err == nil {
 		s.Status = StatusSuccess
+		// TODO(klihub): kludge to 'patch away' any old errors from
+		// lingering. Needs to be fixed properly...
+		e := ""
+		s.Error = &e
 	} else {
 		s.Status = StatusFailure
-		s.Error = fmt.Sprintf("%v", err)
+		e := fmt.Sprintf("%v", err)
+		s.Error = &e
 	}
 	return s
 }
