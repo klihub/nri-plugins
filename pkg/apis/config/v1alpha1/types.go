@@ -132,6 +132,9 @@ func NewNodeStatus(err error, generation int64) *NodeStatus {
 	}
 	if err == nil {
 		s.Status = StatusSuccess
+		// TODO(klihub): kludge to 'patch away' any old errors from
+		// lingering. Needs to be fixed properly...
+		s.Error = "-"
 	} else {
 		s.Status = StatusFailure
 		s.Error = fmt.Sprintf("%v", err)
