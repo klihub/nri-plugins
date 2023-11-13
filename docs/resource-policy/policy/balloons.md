@@ -193,8 +193,8 @@ cpu:
       uncoreMaxFreq: 2400
 ```
 
-See the [sample configmap](/sample-configs/balloons-policy.cfg) for a
-complete example.
+See the [sample configuration custom resource](/sample-configs/balloons-config.yaml) for a
+more complete example.
 
 ## Assigning a Container to a Balloon
 

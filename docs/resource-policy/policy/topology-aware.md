@@ -128,10 +128,8 @@ policy:
 ## Configuring the Policy
 
 The policy has a number of configuration options which affect its default
-behavior. These options can be supplied as part of the
-[dynamic configuration](../setup.md#dynamic-configuration-with-configmaps)
-or in a fallback or forced configuration file. These configuration options
-are
+behavior. These options can be supplied as part of the effective
+[dynamic configuration][configuration] custom resource.
 
 - `PinCPU`
   - whether to pin workloads to assigned pool CPU sets
@@ -729,3 +727,6 @@ metadata:
           - container2
           - container3
 ```
+
+<!-- Links -->
+[configuration]: ../configuration.md
