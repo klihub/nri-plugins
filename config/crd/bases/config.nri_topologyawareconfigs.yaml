@@ -151,9 +151,12 @@ spec:
           metadata:
             type: object
           status:
+            description: ConfigStatus is the per-node status for a configuration resource.
             properties:
               nodes:
                 additionalProperties:
+                  description: NodeStatus is the configuration status for a single
+                    node.
                   properties:
                     errors:
                       description: Error can provide further details of a configuration
@@ -172,7 +175,7 @@ spec:
                       - Failure
                       type: string
                     timestamp:
-                      description: Last time of success/failure.
+                      description: Timestamp of setting this status.
                       format: date-time
                       type: string
                   required:
