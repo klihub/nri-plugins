@@ -16,13 +16,12 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
@@ -80,77 +79,24 @@ func (cif *configIf) CreateWatch(ctx context.Context, ns, name string) (watch.In
 	return nil, fmt.Errorf("configIf: unknown config type %v", cif.kind)
 }
 
-type mergePatchConfig struct {
-	Status mergePatchStatus `json:"status,omitempty"`
-}
-
-type mergePatchStatus struct {
-	Nodes map[string]*cfgapi.NodeStatus `json:"nodes,omitempty"`
-}
-
-func (cif *configIf) PatchStatus(ctx context.Context, ns, name, node string, s *cfgapi.NodeStatus) error {
+func (cif *configIf) PatchStatus(ctx context.Context, ns, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions) error {
 	if cif.cli == nil {
 		return nil
 	}
 
-	var (
-		pType = k8stypes.MergePatchType
-		pOpts = metav1.PatchOptions{}
-	)
+	var err error
 
 	switch cif.kind {
 	case balloonsConfig:
-		cfg := &mergePatchConfig{
-			Status: mergePatchStatus{
-				Nodes: map[string]*cfgapi.NodeStatus{
-					node: s,
-				},
-			},
-		}
-		pData, err := json.Marshal(cfg)
-		if err != nil {
-			return fmt.Errorf("failed to marshal JSON patch: %v", err)
-		}
-
-		_, err = cif.cli.ConfigV1alpha1().BalloonsConfigs(ns).Patch(ctx, name, pType, pData, pOpts, "status")
-		if err != nil {
-			return fmt.Errorf("patching status failed: %v", err)
-		}
-
+		_, err = cif.cli.ConfigV1alpha1().BalloonsConfigs(ns).Patch(ctx, name, pt, data, opts, "status")
 	case topologyAwareConfig:
-		cfg := &mergePatchConfig{
-			Status: mergePatchStatus{
-				Nodes: map[string]*cfgapi.NodeStatus{
-					node: s,
-				},
-			},
-		}
-		pData, err := json.Marshal(cfg)
-		if err != nil {
-			return fmt.Errorf("failed to marshal JSON patch: %v", err)
-		}
-		_, err = cif.cli.ConfigV1alpha1().TopologyAwareConfigs(ns).Patch(ctx, name, pType, pData, pOpts, "status")
-		if err != nil {
-			return fmt.Errorf("patching status failed: %v", err)
-		}
-
+		_, err = cif.cli.ConfigV1alpha1().TopologyAwareConfigs(ns).Patch(ctx, name, pt, data, opts, "status")
 	case templateConfig:
+		_, err = cif.cli.ConfigV1alpha1().TemplateConfigs(ns).Patch(ctx, name, pt, data, opts, "status")
+	}
 
-		cfg := &cfgapi.TemplateConfig{
-			Status: cfgapi.ConfigStatus{
-				Nodes: map[string]cfgapi.NodeStatus{
-					node: *s,
-				},
-			},
-		}
-		pData, err := json.Marshal(cfg)
-		if err != nil {
-			return fmt.Errorf("failed to marshal JSON patch: %v", err)
-		}
-		_, err = cif.cli.ConfigV1alpha1().TemplateConfigs(ns).Patch(ctx, name, pType, pData, pOpts, "status")
-		if err != nil {
-			return fmt.Errorf("patching status failed: %v", err)
-		}
+	if err != nil {
+		return fmt.Errorf("patching status failed: %v", err)
 	}
 
 	return nil

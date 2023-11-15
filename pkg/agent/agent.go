@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -80,9 +81,8 @@ type ConfigInterface interface {
 	SetKubeClient(cli *http.Client, cfg *rest.Config) error
 	// Create a watch for monitoring the named custom resource.
 	CreateWatch(ctx context.Context, namespace, name string) (watch.Interface, error)
-	// Patch the status subresource of the named custom resource with the given node
-	// status. If status is nil, any status for node should be deleted from the subresource.
-	PatchStatus(ctx context.Context, namespace, name, node string, s *cfgapi.NodeStatus) error
+	// Patch the status subresource of the named custom resource.
+	PatchStatus(ctx context.Context, namespace, name string, pt types.PatchType, data []byte, opts metav1.PatchOptions) error
 	// Create a watch for a local file instead of custom resources.
 	WatchFile(file string) (watch.Interface, error)
 }
@@ -529,38 +529,43 @@ func (a *Agent) updateGroupConfig(obj runtime.Object) {
 	a.currentCfg = cfg
 }
 
-func (a *Agent) patchConfigStatus(prev, curr cfgapi.AnyConfig, err error) {
+func (a *Agent) patchConfigStatus(prev, curr cfgapi.AnyConfig, errors error) {
 	if a.cfgIf == nil {
 		return
 	}
 
-	var (
-		ctx      = context.TODO()
-		ns       = a.namespace
-		node     = a.nodeName
-		prevName string
-		currName string
-	)
-
+	prevName := ""
 	if prev != nil {
 		prevName = prev.GetObjectMeta().Name
 	}
+
+	currName := ""
 	if curr != nil {
 		currName = curr.GetObjectMeta().Name
 	}
 
+	ctx := context.TODO()
+	ns := a.namespace
+	node := a.nodeName
+
 	if prev != nil && prevName != currName {
-		pErr := a.cfgIf.PatchStatus(ctx, ns, prevName, node, nil)
-		if pErr != nil {
-			log.Errorf("failed to patch status of previous config %s/%s: %v", ns, prevName, pErr)
+		data, pt, err := cfgapi.NodeStatusPatch(node, nil)
+		if err == nil {
+			err = a.cfgIf.PatchStatus(ctx, ns, prevName, pt, data, metav1.PatchOptions{})
+		}
+		if err != nil {
+			log.Errorf("failed to patch status of previous config %s/%s: %v", ns, prevName, err)
 		}
 	}
 
 	if curr != nil {
-		status := cfgapi.NewNodeStatus(err, curr.GetObjectMeta().Generation)
-		pErr := a.cfgIf.PatchStatus(ctx, ns, currName, node, status)
-		if pErr != nil {
-			log.Errorf("failed to patch status of current config %s/%s: %v", ns, currName, pErr)
+		status := cfgapi.NewNodeStatus(errors, curr.GetObjectMeta().Generation)
+		data, pt, err := cfgapi.NodeStatusPatch(node, status)
+		if err == nil {
+			err = a.cfgIf.PatchStatus(ctx, ns, currName, pt, data, metav1.PatchOptions{})
+		}
+		if err != nil {
+			log.Errorf("failed to patch status of current config %s/%s: %v", ns, currName, err)
 		}
 	}
 }
