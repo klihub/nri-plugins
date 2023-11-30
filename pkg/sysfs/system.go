@@ -163,6 +163,7 @@ type CPU interface {
 	ID() idset.ID
 	PackageID() idset.ID
 	DieID() idset.ID
+	ClusterID() idset.ID
 	NodeID() idset.ID
 	CoreID() idset.ID
 	ThreadCPUSet() cpuset.CPUSet
@@ -186,6 +187,7 @@ type cpu struct {
 	id       idset.ID    // CPU id
 	pkg      idset.ID    // package id
 	die      idset.ID    // die id
+	cluster  idset.ID    // cluster id
 	node     idset.ID    // node id
 	core     idset.ID    // core id
 	threads  idset.IDSet // sibling/hyper-threads
@@ -353,6 +355,7 @@ func (sys *system) Discover(flags DiscoveryFlag) error {
 			sys.Debug("CPU #%d:", id)
 			sys.Debug("        pkg: %d", cpu.pkg)
 			sys.Debug("        die: %d", cpu.die)
+			sys.Debug("    cluster: %d", cpu.cluster)
 			sys.Debug("       node: %d", cpu.node)
 			sys.Debug("       core: %d", cpu.core)
 			sys.Debug("    threads: %s", cpu.threads)
@@ -589,6 +592,7 @@ func (sys *system) discoverCPU(path string) error {
 			return err
 		}
 		readSysfsEntry(path, "topology/die_id", &cpu.die)
+		readSysfsEntry(path, "topology/cluster_id", &cpu.cluster)
 		if _, err := readSysfsEntry(path, "topology/core_id", &cpu.core); err != nil {
 			return err
 		}
@@ -657,6 +661,11 @@ func (c *cpu) PackageID() idset.ID {
 // DieID returns the die id of this CPU.
 func (c *cpu) DieID() idset.ID {
 	return c.die
+}
+
+// ClusterID returns the cluster id of this CPU.
+func (c *cpu) ClusterID() idset.ID {
+	return c.cluster
 }
 
 // NodeID returns the node id of this CPU.
