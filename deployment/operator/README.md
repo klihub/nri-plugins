@@ -1,4 +1,6 @@
-# nri-plugins-operator
+# NRI-Plugins-Operator 
+
+## Introduction
 
 The nri-plugins-operator is an Ansible-based operator created with operator-sdk to manage the life cycle of the
 nri-plugins. The operator deploys community maintained [nri-plugins](https://github.com/containers/nri-plugins) in
@@ -6,7 +8,24 @@ Kubernetes cluster. When operator is installed, it doesn't do anything apart fro
 NriPluginDeployment. When NriPluginDeployment object is created, reconciliation loops kicks off and installs the
 nri-plugin specified in the NriPluginDeployment. 
 
-## nriPluginDeployment object
+## Installation
+
+Build the operator image and push it to some registry
+```shell
+make docker-build docker-push IMG="my-registry.com/nri-plugins-operator:unstable"
+```
+
+Deploy the operator in your cluster
+```shell
+make deploy
+```
+
+Uninstall the operator
+```shell
+make undeploy
+```
+
+## Operator CRD
 
 ```YAML
 apiVersion: config.nri/v1alpha1
@@ -48,23 +67,3 @@ spec:
   requiring users to recreate the object to pass new values.
 - `spec.status`: Tracks the basic state of the resource and includes basic messages in case the operator encounters 
   issues while reconciling the object.
-
-## Operator installation
-
-Build the operator image and push it to some registry
-```shell
-make docker-build docker-push IMG="my-registry.com/nri-plugins-operator:unstable"
-```
-
-Deploy the operator in your cluster
-```shell
-make deploy
-```
-
-Uninstall the operator
-```shell
-make undeploy
-```
-
-# License
-Licensed under [Apache 2.0](https://github.com/containers/nri-plugins-operator/blob/main/LICENSE).
