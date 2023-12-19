@@ -23,6 +23,8 @@ ifdef IMAGE_REPO
     override IMAGE_REPO := $(IMAGE_REPO)/
 endif
 
+export IMAGE_VERSION
+
 # Determine binary version and buildid.
 BUILD_VERSION := $(shell scripts/build/get-buildid --version --shell=no)
 BUILD_BUILDID := $(shell scripts/build/get-buildid --buildid --shell=no)
@@ -53,6 +55,8 @@ BIN_PATH      := $(BUILD_PATH)/bin
 COVERAGE_PATH := $(BUILD_PATH)/coverage
 IMAGE_PATH    := $(BUILD_PATH)/images
 LICENSE_PATH  := $(BUILD_PATH)/licenses
+
+export IMAGE_PATH
 
 DOCKER       := docker
 DOCKER_BUILD := $(DOCKER) build
@@ -207,7 +211,9 @@ $(BIN_PATH)/%: .static.%.$(STATIC)
 #
 
 images: $(foreach p,$(PLUGINS),image.$(p)) \
-	$(foreach p,$(BINARIES),image.$(p))
+	$(foreach p,$(BINARIES),image.$(p)) \
+	nri-plugins-operator-image \
+	nri-plugins-operator-bundle-image
 
 image.nri-resource-policy-% \
 image.nri-% \
@@ -234,6 +240,14 @@ image.%:
 	NRI_IMAGE_REPOTAG=`awk '{print $$2}' <<< "$${NRI_IMAGE_INFO}"`; \
 	NRI_IMAGE_TAR=`realpath "$(IMAGE_PATH)/$${tag}-image-$${NRI_IMAGE_ID}.tar"`; \
 	$(DOCKER) image save "$${NRI_IMAGE_REPOTAG}" > "$${NRI_IMAGE_TAR}";
+
+nri-plugins-operator-image:
+	$(Q)mkdir -p $(IMAGE_PATH); \
+	$(MAKE) -C deployment/operator image-save
+
+nri-plugins-operator-bundle-image:
+	$(Q)mkdir -p $(IMAGE_PATH); \
+	$(MAKE) -C deployment/operator bundle-save
 
 #
 # plugin build dependencies

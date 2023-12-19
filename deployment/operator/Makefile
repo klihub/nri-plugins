@@ -1,9 +1,13 @@
+# Default image version (tag) and image save path.
+IMAGE_VERSION ?= $(shell git describe --dirty 2> /dev/null)
+IMAGE_PATH ?= .
+
 # VERSION defines the project version for the bundle.
 # Update this value when you upgrade the version of your project.
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 0.0.1
+VERSION ?= $(shell echo $(IMAGE_VERSION) | sed 's/^v//')
 
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
@@ -51,7 +55,11 @@ endif
 OPERATOR_SDK_VERSION ?= v1.32.0
 
 # Image URL to use all building/pushing image targets
-IMG ?= ghcr.io/containers/nri-plugins-operator:unstable
+IMG ?= $(IMAGE_TAG_BASE):$(IMAGE_VERSION)
+
+# (Default) operator image dockerfile and bundle image dockerfile.
+DOCKERFILE ?= Dockerfile
+BUNDLE_DOCKERFILE = bundle.Dockerfile
 
 .PHONY: all
 all: docker-build
@@ -70,12 +78,23 @@ run: ansible-operator ## Run against the configured Kubernetes cluster in ~/.kub
 	$(ANSIBLE_OPERATOR) run
 
 .PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	docker build -t ${IMG} .
+docker-build:
+	docker build -f $(DOCKERFILE) -t ${IMG} .
 
 .PHONY: docker-push
-docker-push: ## Push docker image with the manager.
+docker-push:
 	docker push ${IMG}
+
+.PHONY: docker-save
+docker-save: docker-build
+	@img_name="${IMG}"; \
+	img_name="$${img_name##*/}"; \
+	img_name="$${img_name%:*}"; \
+	img_info=`docker images --filter=reference=${IMG} --format '{{.ID}} {{.Repository}}:{{.Tag}} (created {{.CreatedSince}}, {{.CreatedAt}})' | head -n 1`; \
+	img_id=`awk '{print $$1}' <<< "$${img_info}"`; \
+	img_tag=`awk '{print $$2}' <<< "$${img_info}"`; \
+	img_tar=`realpath "$(IMAGE_PATH)/$${img_name}-image-$${img_id}.tar"`; \
+	docker image save "$${img_tag}" > "$${img_tar}";
 
 # PLATFORMS defines the target platforms for  the manager image be build to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -170,6 +189,7 @@ SAMPLE_SOURCE_DIR := ../../sample-configs
 SAMPLE_DEST_DIR := config/samples
 
 bundle-crds: ## Copy CRDs and CRs from root directory to operator directory for bundle packaging.
+	mkdir -p $(CRD_DEST_DIR)
 	cp $(CRD_SOURCE_DIR)/* $(CRD_DEST_DIR)
 	cp $(SAMPLE_SOURCE_DIR)/balloons-config.yaml $(SAMPLE_DEST_DIR)
 	cp $(SAMPLE_SOURCE_DIR)/template-config.yaml $(SAMPLE_DEST_DIR)
@@ -189,13 +209,28 @@ bundle: bundle-crds kustomize operator-sdk ## Generate bundle manifests and meta
 	rm -f $(SAMPLE_DEST_DIR)/noderesourcetopology.yaml
 
 .PHONY: bundle-build
-bundle-build: ## Build the bundle image.
-	docker build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+bundle-build: bundle ## Build the bundle image.
+	$(MAKE) DOCKERFILE=$(BUNDLE_DOCKERFILE) IMG=$(BUNDLE_IMG) docker-build
 
 .PHONY: bundle-push
 bundle-push: ## Push the bundle image.
 	$(MAKE) docker-push IMG=$(BUNDLE_IMG)
 
+.PHONY: bundle-save ## Export the bundle image as a tarball.
+bundle-save: bundle-build
+	$(MAKE) DOCKERFILE=$(BUNDLE_DOCKERFILE) IMG=$(BUNDLE_IMG) docker-save
+
+.PHONY: image-build
+image-build: ## Build the operator image.
+	$(MAKE) docker-build
+
+.PHONY: image-push
+image-push: ## Push the operator image.
+	$(MAKE) docker-push
+
+.PHONY: image-save
+image-save: image-build ## Export the operator image as a tarball.
+	$(MAKE) docker-save
 .PHONY: opm
 OPM = ./bin/opm
 opm: ## Download opm locally if necessary.
