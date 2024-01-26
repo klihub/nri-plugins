@@ -500,9 +500,49 @@ generate-clients: $(GENERATE_GROUPS)
 generate-go:
 	$(Q)$(GO_CMD) generate ./...
 
-# rule to update generated CRDs in our helm charts
+#
+# rules to update generated CRDs in our helm charts
+#
+
+# canned rule for declaring per-plugin Helm chart CRDs
+define declare-crds
+    $(foreach crd,$(2),$(HELM_TOP_DIR)/$(1)/crds/$(crd).yaml)
+endef
+
+# canned recipe for updating one CRD
+define update-crd =
+	echo "Updating CRD $@ (from $<)..."; \
+	cp $< $@
+endef
+
+# per-plugin set of CRDs
+BALLOONS_PLUGIN_CRDS := \
+    config.nri_balloonspolicies topology.node.k8s.io_noderesourcetopologies
+TEMPLATE_PLUGIN_CRDS := \
+    config.nri_templatepolicies topology.node.k8s.io_noderesourcetopologies
+TOPOLOGYAWARE_PLUGIN_CRDS := \
+    config.nri_topologyawarepolicies topology.node.k8s.io_noderesourcetopologies
+
+# colective rule to update all (out-of-date) CRDs
 .PHONY: update-helm-crds
-update-helm-crds:
+update-helm-crds: \
+    $(call declare-crds,balloons,$(strip $(BALLOONS_PLUGIN_CRDS))) \
+    $(call declare-crds,template,$(strip $(TEMPLATE_PLUGIN_CRDS))) \
+    $(call declare-crds,topology-aware,$(strip $(TOPOLOGYAWARE_PLUGIN_CRDS)))
+
+# per-plugin rules for updating CRDs.
+$(HELM_TOP_DIR)/balloons/crds/%.yaml: $(CRD_BASE_DIR)/%.yaml
+	@$(call update-crd)
+
+$(HELM_TOP_DIR)/template/crds/%.yaml: $(CRD_BASE_DIR)/%.yaml
+	@$(call update-crd)
+
+$(HELM_TOP_DIR)/topology-aware/crds/%.yaml: $(CRD_BASE_DIR)/%.yaml
+	@$(call update-crd)
+
+
+.PHONY: update-helm-crds
+orig-update-helm-crds:
 	$(Q)for plugin in $(PLUGINS); do \
 	    plugin="$${plugin#nri-}"; plugin="$${plugin#resource-policy-}"; \
             helm_dir=$(HELM_TOP_DIR)/$$plugin/crds; \
