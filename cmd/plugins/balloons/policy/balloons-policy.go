@@ -399,14 +399,25 @@ func (p *balloons) balloonDefByName(defName string) *BalloonDef {
 }
 
 func (p *balloons) chooseBalloonDef(c cache.Container) (*BalloonDef, error) {
-	var blnDef *BalloonDef
 	// BalloonDef is defined by annotation?
 	if blnDefName, ok := c.GetEffectiveAnnotation(balloonKey); ok {
-		blnDef = p.balloonDefByName(blnDefName)
+		blnDef := p.balloonDefByName(blnDefName)
 		if blnDef == nil {
 			return nil, balloonsError("no balloon for annotation %q", blnDefName)
 		}
 		return blnDef, nil
+	}
+
+	// BalloonDef is defined by a match expression?
+	for _, blnDef := range append([]*BalloonDef{p.reservedBalloonDef, p.defaultBalloonDef}, p.bpoptions.BalloonDefs...) {
+		for _, expr := range blnDef.MatchContainers {
+			log.Debugf("- checking expression %s of balloon %q against container %s...",
+				expr.String(), blnDef.Name, c.PrettyName())
+			if expr.Evaluate(c) {
+				log.Debugf("  => matches")
+				return blnDef, nil
+			}
+		}
 	}
 
 	// BalloonDef is defined by a special namespace (kube-system +
