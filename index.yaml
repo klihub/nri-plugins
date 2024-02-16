@@ -3,92 +3,92 @@ entries:
   nri-memory-qos:
   - apiVersion: v2
     appVersion: unstable
-    created: "2024-02-16T14:28:09.076961117Z"
+    created: "2024-02-16T14:44:28.935433876Z"
     description: 'The memory-qos NRI plugin adds two methods for controlling cgroups
       v2 memory.* parameters: QoS class and direct memory annotations. '
-    digest: c6dc1b9625916d1973524f98950d0fd89e3352c4493091a380ea07eb3e81cf05
+    digest: d4836d5d4b0dfb0cde4401ea780235cf38168a927a74daede0276192f6262d6e
     home: https://github.com/containers/nri-plugins
     name: nri-memory-qos
     sources:
     - https://github.com/containers/nri-plugins
     type: application
     urls:
-    - https://github.com/klihub/nri-plugins/raw/unstable-helm-charts/nri-memory-qos-helm-chart-v0.3.2-unstable.tgz
-    version: v0.3.2-unstable
+    - oci://ghcr.io/klihub/nri-plugins/nri-memory-qos-0.3.2-unstable.tgz
+    version: 0.3.2-unstable
   nri-memtierd:
   - apiVersion: v2
     appVersion: unstable
-    created: "2024-02-16T14:28:09.11524914Z"
+    created: "2024-02-16T14:44:28.935738256Z"
     description: 'The memtierd NRI plugin enables managing workloads with Memtierd
       in Kubernetes. '
-    digest: 10b26fcb3be6170c67c11fdb5a43419fc2d41658884414defd75e736f7a6bc5e
+    digest: 1147cfe52eacda085316e53dadce3921f8c6de3a76963c8562b3a40427f9685c
     home: https://github.com/containers/nri-plugins
     name: nri-memtierd
     sources:
     - https://github.com/containers/nri-plugins
     type: application
     urls:
-    - https://github.com/klihub/nri-plugins/raw/unstable-helm-charts/nri-memtierd-helm-chart-v0.3.2-unstable.tgz
-    version: v0.3.2-unstable
+    - oci://ghcr.io/klihub/nri-plugins/nri-memtierd-0.3.2-unstable.tgz
+    version: 0.3.2-unstable
   nri-resource-policy-balloons:
   - apiVersion: v2
     appVersion: unstable
-    created: "2024-02-16T14:28:09.149830324Z"
+    created: "2024-02-16T14:44:28.936439439Z"
     description: 'The balloons NRI resource policy plugin implements workload placement
       into “balloons” that are disjoint CPU pools. '
-    digest: ac1497201d50e67b7439572892adc6aeeb6d7c58d61ade27c0db09698b10e8dd
+    digest: f99fb5a6bd52e095154d8785274e43200435683979d44b1733148d15a9e40fc4
     home: https://github.com/containers/nri-plugins
     name: nri-resource-policy-balloons
     sources:
     - https://github.com/containers/nri-plugins
     type: application
     urls:
-    - https://github.com/klihub/nri-plugins/raw/unstable-helm-charts/nri-resource-policy-balloons-helm-chart-v0.3.2-unstable.tgz
-    version: v0.3.2-unstable
+    - oci://ghcr.io/klihub/nri-plugins/nri-resource-policy-balloons-0.3.2-unstable.tgz
+    version: 0.3.2-unstable
   nri-resource-policy-template:
   - apiVersion: v2
     appVersion: unstable
-    created: "2024-02-16T14:28:09.186217615Z"
+    created: "2024-02-16T14:44:28.937003154Z"
     description: 'The template NRI resource policy plugin is a wireframe implementation
       without any policy logic. It can be used as a template to create new policies. '
-    digest: 68ff95e7ebc2ac27a462da445a660f5527a5a6c64532bf623ebd4f2043bf360f
+    digest: 6f06be68e69c780b468955a2eccf02b265888e1c9a90fd6f656e8370bf1170f3
     home: https://github.com/containers/nri-plugins
     name: nri-resource-policy-template
     sources:
     - https://github.com/containers/nri-plugins
     type: application
     urls:
-    - https://github.com/klihub/nri-plugins/raw/unstable-helm-charts/nri-resource-policy-template-helm-chart-v0.3.2-unstable.tgz
-    version: v0.3.2-unstable
+    - oci://ghcr.io/klihub/nri-plugins/nri-resource-policy-template-0.3.2-unstable.tgz
+    version: 0.3.2-unstable
   nri-resource-policy-topology-aware:
   - apiVersion: v2
     appVersion: unstable
-    created: "2024-02-16T14:28:09.221611117Z"
+    created: "2024-02-16T14:44:28.937415997Z"
     description: 'Topology-aware NRI resource policy plugin is a NRI plugin that will
       apply hardware-aware resource allocation policies to the containers running
       in the system. '
-    digest: 8a861e4b6e7b49abf54f2927d26afc4d479600f9ed2dd23e3b711b691ec863f0
+    digest: dbd4b5115c58ad8a8a129aab7c94d7eae3ce3e5df3a6282bcc00307e776ca59a
     home: https://github.com/containers/nri-plugins
     name: nri-resource-policy-topology-aware
     sources:
     - https://github.com/containers/nri-plugins
     type: application
     urls:
-    - https://github.com/klihub/nri-plugins/raw/unstable-helm-charts/nri-resource-policy-topology-aware-helm-chart-v0.3.2-unstable.tgz
-    version: v0.3.2-unstable
+    - oci://ghcr.io/klihub/nri-plugins/nri-resource-policy-topology-aware-0.3.2-unstable.tgz
+    version: 0.3.2-unstable
   nri-sgx-epc:
   - apiVersion: v2
     appVersion: unstable
-    created: "2024-02-16T14:28:09.269035294Z"
+    created: "2024-02-16T14:44:28.937672968Z"
     description: 'The sgx-epc NRI plugin allows control over SGX encrypted page cache
       usage using the cgroup v2 misc controller and pod annotations. '
-    digest: ab8fad7be175f70dbe1db584af11961a574c87bb6f88e04c5d3e78dc7d10fe06
+    digest: 7a13e8def3300745d0a52a3a397e19f457187aca9dfa564ec134dc126c11d64d
     home: https://github.com/containers/nri-plugins
     name: nri-sgx-epc
     sources:
     - https://github.com/containers/nri-plugins
     type: application
     urls:
-    - https://github.com/klihub/nri-plugins/raw/unstable-helm-charts/nri-sgx-epc-helm-chart-v0.3.2-unstable.tgz
-    version: v0.3.2-unstable
-generated: "2024-02-16T14:28:09.268609502Z"
+    - oci://ghcr.io/klihub/nri-plugins/nri-sgx-epc-0.3.2-unstable.tgz
+    version: 0.3.2-unstable
+generated: "2024-02-16T14:44:28.934988662Z"
