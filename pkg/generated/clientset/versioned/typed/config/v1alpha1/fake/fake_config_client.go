@@ -30,6 +30,10 @@ func (c *FakeConfigV1alpha1) BalloonsPolicies(namespace string) v1alpha1.Balloon
 	return &FakeBalloonsPolicies{c, namespace}
 }
 
+func (c *FakeConfigV1alpha1) GenericPolicies(namespace string) v1alpha1.GenericPolicyInterface {
+	return &FakeGenericPolicies{c, namespace}
+}
+
 func (c *FakeConfigV1alpha1) TemplatePolicies(namespace string) v1alpha1.TemplatePolicyInterface {
 	return &FakeTemplatePolicies{c, namespace}
 }

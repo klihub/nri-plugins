@@ -34,6 +34,7 @@ type configKind int
 
 const (
 	balloonsConfig configKind = iota
+	genericConfig
 	topologyAwareConfig
 	templateConfig
 )
@@ -70,6 +71,8 @@ func (cif *configIf) CreateWatch(ctx context.Context, ns, name string) (watch.In
 	switch cif.kind {
 	case balloonsConfig:
 		return cif.cli.ConfigV1alpha1().BalloonsPolicies(ns).Watch(ctx, selector)
+	case genericConfig:
+		return cif.cli.ConfigV1alpha1().GenericPolicies(ns).Watch(ctx, selector)
 	case topologyAwareConfig:
 		return cif.cli.ConfigV1alpha1().TopologyAwarePolicies(ns).Watch(ctx, selector)
 	case templateConfig:
@@ -88,6 +91,8 @@ func (cif *configIf) PatchStatus(ctx context.Context, ns, name string, pt types.
 	switch cif.kind {
 	case balloonsConfig:
 		_, err = cif.cli.ConfigV1alpha1().BalloonsPolicies(ns).Patch(ctx, name, pt, data, opts, "status")
+	case genericConfig:
+		_, err = cif.cli.ConfigV1alpha1().GenericPolicies(ns).Patch(ctx, name, pt, data, opts, "status")
 	case topologyAwareConfig:
 		_, err = cif.cli.ConfigV1alpha1().TopologyAwarePolicies(ns).Patch(ctx, name, pt, data, opts, "status")
 	case templateConfig:
@@ -110,6 +115,12 @@ func (cif *configIf) Unmarshal(data []byte, file string) (runtime.Object, error)
 	switch cif.kind {
 	case balloonsConfig:
 		cfg := &cfgapi.BalloonsPolicy{}
+		if err = yaml.UnmarshalStrict(data, cfg); err == nil {
+			cfg.Name = file + ":" + cfg.Name
+			obj = cfg
+		}
+	case genericConfig:
+		cfg := &cfgapi.GenericPolicy{}
 		if err = yaml.UnmarshalStrict(data, cfg); err == nil {
 			cfg.Name = file + ":" + cfg.Name
 			obj = cfg

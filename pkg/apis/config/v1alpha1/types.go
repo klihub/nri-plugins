@@ -21,6 +21,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/log"
 	"github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control"
 	"github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/balloons"
+	"github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/generic"
 	"github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/template"
 	"github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/topologyaware"
 )
@@ -89,6 +90,38 @@ type BalloonsPolicyList struct {
 	Items []BalloonsPolicy `json:"items"`
 }
 
+// GenericPolicy represents the configuration for the topology-aware policy.
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +genclient
+type GenericPolicy struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   GenericPolicySpec `json:"spec"`
+	Status ConfigStatus      `json:"status,omitempty"`
+}
+
+// GenericPolicySpec describes a topology-aware policy.
+type GenericPolicySpec struct {
+	generic.Config `json:",inline"`
+	// +optional
+	Control control.Config `json:"control,omitempty"`
+	// +optional
+	Log log.Config `json:"log,omitempty"`
+	// +optional
+	Instrumentation instrumentation.Config `json:"instrumentation,omitempty"`
+}
+
+// GenericPolicyList represents a list of GenericPolicies.
+// +kubebuilder:object:root=true
+type GenericPolicyList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+
+	Items []GenericPolicy `json:"items"`
+}
+
 // TemplatePolicy represents the configuration for the template policy.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -143,6 +176,7 @@ func init() {
 	SchemeBuilder.Register(
 		&TopologyAwarePolicy{}, &TopologyAwarePolicyList{},
 		&BalloonsPolicy{}, &BalloonsPolicyList{},
+		&GenericPolicy{}, &GenericPolicyList{},
 		&TemplatePolicy{}, &TemplatePolicyList{},
 	)
 }

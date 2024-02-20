@@ -27,6 +27,7 @@ import (
 type ConfigV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	BalloonsPoliciesGetter
+	GenericPoliciesGetter
 	TemplatePoliciesGetter
 	TopologyAwarePoliciesGetter
 }
@@ -38,6 +39,10 @@ type ConfigV1alpha1Client struct {
 
 func (c *ConfigV1alpha1Client) BalloonsPolicies(namespace string) BalloonsPolicyInterface {
 	return newBalloonsPolicies(c, namespace)
+}
+
+func (c *ConfigV1alpha1Client) GenericPolicies(namespace string) GenericPolicyInterface {
+	return newGenericPolicies(c, namespace)
 }
 
 func (c *ConfigV1alpha1Client) TemplatePolicies(namespace string) TemplatePolicyInterface {

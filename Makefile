@@ -73,7 +73,8 @@ PLUGINS ?= \
 	nri-resource-policy-template \
 	nri-memory-qos \
 	nri-memtierd \
-        nri-sgx-epc
+        nri-sgx-epc \
+	nri-resource-policy-generic
 
 BINARIES ?= \
 	config-manager
@@ -262,6 +263,14 @@ $(BIN_PATH)/nri-resource-policy-balloons: \
     $(shell for f in cmd/plugins/balloons/*.go; do echo $$f; done; \
                 for dir in $(shell $(GO_DEPS) ./cmd/plugins/balloons/... | \
                           grep -E '(/nri-plugins/)|(cmd/plugins/balloons/)' | \
+                          sed 's#github.com/containers/nri-plugins/##g'); do \
+                find $$dir -name \*.go; \
+            done | sort | uniq)
+
+$(BIN_PATH)/nri-resource-policy-generic: \
+    $(shell for f in cmd/plugins/generic/*.go; do echo $$f; done; \
+            for dir in $(shell $(GO_DEPS) ./cmd/plugins/generic/... | \
+                          grep -E '(/nri-plugins/)|(cmd/plugins/generic/)' | \
                           sed 's#github.com/containers/nri-plugins/##g'); do \
                 find $$dir -name \*.go; \
             done | sort | uniq)

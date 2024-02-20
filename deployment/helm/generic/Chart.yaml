@@ -1,0 +1,10 @@
+apiVersion: v2
+appVersion: unstable
+description: |
+  The generic NRI resource policy plugin is a basic policy with generic hardware toplogy awareness. It should be a reasonable choice as a default policy for generic workloads.
+name: nri-resource-policy-generic
+sources:
+ - https://github.com/containers/nri-plugins
+home: https://github.com/containers/nri-plugins
+type: application
+version: v0.0.0

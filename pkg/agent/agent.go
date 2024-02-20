@@ -92,6 +92,11 @@ func BalloonsConfigInterface() ConfigInterface {
 	return newConfigIf(balloonsConfig)
 }
 
+// GenericConfigInterface returns a ConfigInterface for the generic policy.
+func GenericConfigInterface() ConfigInterface {
+	return newConfigIf(genericConfig)
+}
+
 // TopologyAwareConfigInterface returns a ConfigInterface for the topology-aware policy.
 func TopologyAwareConfigInterface() ConfigInterface {
 	return newConfigIf(topologyAwareConfig)
