@@ -22,6 +22,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/cpuallocator"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	system "github.com/containers/nri-plugins/pkg/sysfs"
+	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 
 	config "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/generic"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
@@ -34,37 +35,46 @@ const (
 	PolicyDescription = "A generic, hardware topology aware policy."
 )
 
-// policy implements a generic, hardware topology aware resource allocation policy.
+// GenericPolicy implements a fairly generic, topology aware resource assignment algorithm.
+type GenericPolicy struct {
+	*policy
+}
+
 type policy struct {
-	cfg   *config.Config
-	sys   system.System
-	cache cache.Cache
-	alloc cpuallocator.CPUAllocator
+	cfg *config.Config
+	sys system.System
+	cch cache.Cache
+	cpu cpuallocator.CPUAllocator
+
+	allowed  cpuset.CPUSet // CPUs we are allowed to use
+	reserved cpuset.CPUSet // system-/kube-reserved CPUs
+	extra    int           // extra capacity in reserved
+
+	root  *Pool
+	pools []*Pool
 }
 
 var (
 	// our logger instance
 	log logger.Logger = logger.NewLogger("policy")
 	// make sure policy implements the policy.Backend interface
-	_ policyapi.Backend = &policy{}
+	_ policyapi.Backend = &GenericPolicy{}
 )
 
-// New creates a new uninitialized policy instance.
 func New() policyapi.Backend {
-	return &policy{}
+	return &GenericPolicy{
+		policy: &policy{},
+	}
 }
 
-// Name returns the name of this policy.
 func (_ *policy) Name() string {
 	return PolicyName
 }
 
-// Description returns the description of this policy.
 func (_ *policy) Description() string {
 	return PolicyDescription
 }
 
-// Setup initializes this policy instance.
 func (p *policy) Setup(opts *policyapi.BackendOptions) error {
 	cfg, ok := opts.Config.(*config.Config)
 	if !ok {
@@ -73,18 +83,29 @@ func (p *policy) Setup(opts *policyapi.BackendOptions) error {
 
 	p.cfg = cfg
 	p.sys = opts.System
-	p.cache = opts.Cache
+	p.cch = opts.Cache
+	p.cpu = cpuallocator.NewCPUAllocator(p.sys)
+
+	if err := p.setupAllowedAndReservedCPUs(); err != nil {
+		return err
+	}
+
+	log.Info("resource setup:")
+	log.Info("  - allowed CPUs:  %s", p.allowed.String())
+	log.Info("  - reserved CPUs: %s (%d milli-CPU extra capacity)", p.reserved.String(), p.extra)
+
+	if err := p.setupPools(); err != nil {
+		return err
+	}
 
 	return nil
 }
 
-// Start prepares this policy instance for accepting allocation/release requests.
 func (p *policy) Start() error {
 	log.Info("started...")
 	return nil
 }
 
-// Reconfigure this policy instance with the given configuration.
 func (p *policy) Reconfigure(newCfg interface{}) error {
 	cfg, ok := newCfg.(*config.Config)
 	if !ok {
@@ -94,57 +115,188 @@ func (p *policy) Reconfigure(newCfg interface{}) error {
 	return nil
 }
 
-// Sync synchronizes the state of policy instance with that of the runtime.
 func (p *policy) Sync(add []cache.Container, del []cache.Container) error {
 	log.Info("synchronizing state...")
 	return nil
 }
 
-// AllocateResources is a resource allocation request for this policy.
 func (p *policy) AllocateResources(container cache.Container) error {
 	log.Info("allocating resources for %s...", container.PrettyName())
 	return nil
 }
 
-// ReleaseResources is a resource release request for this policy.
 func (p *policy) ReleaseResources(container cache.Container) error {
 	log.Info("releasing resources of %s...", container.PrettyName())
 	return nil
 }
 
-// UpdateResources is a resource allocation update request for this policy.
 func (p *policy) UpdateResources(c cache.Container) error {
 	log.Info("(not) updating container %s...", c.PrettyName())
 	return nil
 }
 
-// HandleEvent handles policy-specific events for this policy.
 func (p *policy) HandleEvent(e *events.Policy) (bool, error) {
 	log.Info("received policy event %s.%s with data %v...", e.Source, e.Type, e.Data)
 	return true, nil
 }
 
-// DescribeMetrics generates policy-specific prometheus metrics data descriptors.
 func (p *policy) DescribeMetrics() []*prometheus.Desc {
 	return nil
 }
 
-// PollMetrics provides policy metrics for monitoring.
 func (p *policy) PollMetrics() policyapi.Metrics {
 	return nil
 }
 
-// CollectMetrics generates prometheus metrics from cached/polled policy-specific metrics data.
 func (p *policy) CollectMetrics(policyapi.Metrics) ([]prometheus.Metric, error) {
 	return nil, nil
 }
 
-// GetTopologyZones returns the policy/pool data for 'topology zone' CRDs.
 func (p *policy) GetTopologyZones() []*policyapi.TopologyZone {
 	return nil
 }
 
-// ExportResourceData provides resource data to export for the container.
 func (p *policy) ExportResourceData(c cache.Container) map[string]string {
 	return nil
 }
+
+func (p *policy) setupAllowedAndReservedCPUs() error {
+	online := p.sys.CPUSet().Difference(p.sys.Offlined())
+
+	amount, kind := p.cfg.AvailableResources.Get(config.CPU)
+	switch kind {
+	case config.AmountCPUSet:
+		cset, err := amount.ParseCPUSet()
+		if err != nil {
+			return fmt.Errorf("failed to setup available CPUs: %w", err)
+		}
+		p.allowed = cset
+
+	case config.AmountQuantity:
+		return fmt.Errorf("failed to setup available CPUs: %q given, cpuset expected", amount)
+
+	case config.AmountAbsent:
+		p.allowed = online.Clone()
+	}
+
+	amount, kind = p.cfg.ReservedResources.Get(config.CPU)
+	switch kind {
+	case config.AmountCPUSet:
+		cset, err := amount.ParseCPUSet()
+		if err != nil {
+			return fmt.Errorf("failed to setup reserved CPUs: %w", err)
+		}
+		p.reserved = cset
+		p.extra = 0
+
+	case config.AmountQuantity:
+		qty, err := amount.ParseQuantity()
+		if err != nil {
+			return fmt.Errorf("failed to setup reserved CPUs: %w", err)
+		}
+		ncpu := int((qty.MilliValue() + 999.0) / 1000.0)
+		if ncpu < 1 {
+			ncpu = 1
+		}
+		cpus := online.Clone()
+		cset, err := p.cpu.AllocateCpus(&cpus, ncpu, cpuallocator.PriorityNormal)
+		if err != nil {
+			return fmt.Errorf("failed to setup reserved CPUs: %w", err)
+		}
+		p.reserved = cset
+		p.extra = 1000*ncpu - int(qty.MilliValue())
+
+	case config.AmountAbsent:
+		return fmt.Errorf("failed to setup reserved CPUs: none given")
+	}
+
+	return nil
+}
+
+/*
+type Pool struct {
+	name     string
+	kind     PoolKind
+	cpus     cpuset.CPUSet
+	parent   *Pool
+	children []*Pool
+}
+
+type PoolKind int
+
+const (
+	PoolVirtualRoot PoolKind = iota
+	PoolSocket
+	PoolDie
+	PoolNumaNode
+)
+
+func (p *policy) setupPools() error {
+	root := &Pool{
+		name: "virtual root",
+		kind: PoolVirtualRoot,
+		cpus: p.allowed.Clone(),
+	}
+	log.Debug("setting up pool %s...", root.name)
+
+	children := map[*Pool][]*Pool{}
+	dieNodes := map[idset.ID]idset.ID{}
+
+	for _, pkgID := range p.sys.PackageIDs() {
+		pkg := p.sys.Package(pkgID)
+		pkgPool := &Pool{
+			name:   fmt.Sprintf("socket #%d", pkgID),
+			kind:   PoolSocket,
+			cpus:   pkg.CPUSet().Intersection(p.allowed),
+			parent: root,
+		}
+		children[root] = append(children[root], pkgPool)
+		log.Debug("setting up pool %s...", pkgPool.name)
+		for _, dieID := range pkg.DieIDs() {
+			diePool := &Pool{
+				name:   fmt.Sprintf("die #%d:%d", pkgID, dieID),
+				kind:   PoolDie,
+				cpus:   pkg.DieCPUSet(dieID).Intersection(p.allowed),
+				parent: pkgPool,
+			}
+			children[pkgPool] = append(children[pkgPool], diePool)
+			log.Debug("setting up pool %s...", diePool.name)
+			for _, nodeID := range pkg.DieNodeIDs(dieID) {
+				if otherDie, ok := dieNodes[nodeID]; ok {
+					return fmt.Errorf("failed to setup pools, NUMA node #%d in dies #%d, %#d",
+						nodeID, otherDie, dieID)
+				}
+				dieNodes[nodeID] = dieID
+				nodePool := &Pool{
+					name:   fmt.Sprintf("NUMA node #%d", nodeID),
+					kind:   PoolNumaNode,
+					cpus:   p.sys.Node(nodeID).CPUSet().Intersection(p.allowed),
+					parent: diePool,
+				}
+				children[diePool] = append(children[diePool], nodePool)
+				log.Debug("setting up pool %s...", nodePool.name)
+			}
+		}
+	}
+
+	for p, child := range children {
+		log.Debug("- pool %s has %d children", p.name, len(child))
+		for _, c := range child {
+			log.Debug("  + %s", c.name)
+		}
+		if len(child) == 1 {
+			log.Info("  o pool %s is only child, filtering it out...", child[0].name)
+			children[p] = append(children[p], children[child[0]]...)
+		}
+	}
+
+	for p, child := range children {
+		log.Debug("- pool %s has %d children", p.name, len(child))
+		for _, c := range child {
+			log.Debug("  + %s", c.name)
+		}
+	}
+
+	return nil
+}
+*/
