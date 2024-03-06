@@ -17,6 +17,7 @@ package generic
 import (
 	"fmt"
 
+	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 	idset "github.com/intel/goresctrl/pkg/utils"
 
@@ -86,11 +87,39 @@ func (p *Pool) Flatten() {
 }
 
 func (p *policy) setupPools() error {
-	nodes := []*libmem.Node{}
-	for _, id := range p.sys.NodeIDs() {
-		nodes = append(nodes, libmem.SystemNode(p.sys.Node(id)))
+	a, err := libmem.NewAllocator(libmem.WithSystemNodes(p.sys))
+	if err != nil {
+		log.Error("failed to create allocator: %v", err)
 	}
-	_ = libmem.NewAllocator(nodes...)
+
+	for _, id := range p.sys.NodeIDs() {
+		for t := sysfs.MemoryTypeDRAM; t <= sysfs.MemoryTypeHBM; t++ {
+			closest, err := a.GetClosestNodes(id, libmem.MaskForTypes(t))
+			if err != nil {
+				log.Error("failed to find %v nodes for node #%v: %v", t, id, err)
+				continue
+			}
+			log.Info("node #%v: closest %s nodes: %v", id, libmem.TypeToKind(t), closest)
+		}
+	}
+
+	all := cpuset.New()
+	for _, cpu := range p.sys.CPUSet().List() {
+		cset := cpuset.New(cpu)
+		all = all.Union(cset)
+		for t := sysfs.MemoryTypeDRAM; t <= sysfs.MemoryTypeHBM; t++ {
+			closest := a.GetClosestNodesForCPUs(cset, libmem.MaskForTypes(t))
+			log.Info("CPU #%v: closest %s nodes: %v", cpu, libmem.TypeToKind(t), closest)
+		}
+		km := libmem.KindMask(0)
+		for k := libmem.KindDRAM; k < libmem.KindMax; k++ {
+			closest := a.GetClosestNodesForCPUs(all, libmem.MaskForKinds(k))
+			log.Info("CPUs #%v: closest %s nodes: %v", all, k, closest)
+			km.Set(k)
+			closest = a.GetClosestNodesForCPUs(all, km)
+			log.Info("CPUs #%v: closest %s nodes: %v", all, km, closest)
+		}
+	}
 
 	root, err := p.buildRootPool()
 	if err != nil {
