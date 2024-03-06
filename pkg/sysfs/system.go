@@ -94,6 +94,10 @@ type System interface {
 	Package(id idset.ID) CPUPackage
 	Node(id idset.ID) Node
 	NodeDistance(from, to idset.ID) int
+	NodesWithCPU() []idset.ID
+	NodesWithMemory() []idset.ID
+	NodesWithNormalMemory() []idset.ID
+	NodesWithMovableMemory() []idset.ID
 	CPU(id idset.ID) CPU
 	Offlined() cpuset.CPUSet
 	Isolated() cpuset.CPUSet
@@ -101,16 +105,19 @@ type System interface {
 
 // System devices
 type system struct {
-	logger.Logger                                      // our logger instance
-	flags         DiscoveryFlag                        // system discovery flags
-	path          string                               // sysfs mount point
-	packages      map[idset.ID]*cpuPackage             // physical packages
-	nodes         map[idset.ID]*node                   // NUMA nodes
-	cpus          map[idset.ID]*cpu                    // CPUs
-	caches        [][NumCacheTypes]map[idset.ID]*Cache // CPU caches
-	offline       idset.IDSet                          // offlined CPUs
-	isolated      idset.IDSet                          // isolated CPUs
-	threads       int                                  // hyperthreads per core
+	logger.Logger                                        // our logger instance
+	flags           DiscoveryFlag                        // system discovery flags
+	path            string                               // sysfs mount point
+	packages        map[idset.ID]*cpuPackage             // physical packages
+	nodes           map[idset.ID]*node                   // NUMA nodes
+	hasCPU          idset.IDSet                          // NUMA node with close CPUs
+	hasMemory       idset.IDSet                          // NUMA nodes with any memory
+	hasNormalMemory idset.IDSet                          // NUMA nodes with normal memory
+	cpus            map[idset.ID]*cpu                    // CPUs
+	caches          [][NumCacheTypes]map[idset.ID]*Cache // CPU caches
+	offline         idset.IDSet                          // offlined CPUs
+	isolated        idset.IDSet                          // isolated CPUs
+	threads         int                                  // hyperthreads per core
 }
 
 // CPUPackage is a physical package (a collection of CPUs).
@@ -539,6 +546,25 @@ func (sys *system) NodeDistance(from, to idset.ID) int {
 	return sys.nodes[from].DistanceFrom(to)
 }
 
+func (sys *system) NodesWithCPU() []idset.ID {
+	return sys.hasCPU.SortedMembers()
+}
+
+func (sys *system) NodesWithMemory() []idset.ID {
+	return sys.hasMemory.SortedMembers()
+}
+
+func (sys *system) NodesWithNormalMemory() []idset.ID {
+	return sys.hasNormalMemory.SortedMembers()
+}
+
+func (sys *system) NodesWithMovableMemory() []idset.ID {
+	all := cpuset.New(sys.hasMemory.Members()...)
+	normal := cpuset.New(sys.hasNormalMemory.Members()...)
+
+	return IDSetFromCPUSet(all.Difference(normal)).SortedMembers()
+}
+
 // CPU gets the CPU with a given CPU id.
 func (sys *system) CPU(id idset.ID) CPU {
 	return sys.cpus[id]
@@ -872,6 +898,15 @@ func (sys *system) discoverNodes() error {
 		}
 	}
 
+	cpuMemNodeIDs, err := readSysfsEntry(sysNodesPath, "has_cpu", nil)
+	if err != nil {
+		return fmt.Errorf("failed to discover nodes with close CPUs: %v", err)
+	}
+	cpuMemNodes, err := cpuset.Parse(cpuMemNodeIDs)
+	if err != nil {
+		return fmt.Errorf("failed to parse nodes with close CPUs (%q): %v",
+			cpuMemNodeIDs, err)
+	}
 	normalMemNodeIDs, err := readSysfsEntry(sysNodesPath, "has_normal_memory", nil)
 	if err != nil {
 		return fmt.Errorf("failed to discover nodes with normal memory: %v", err)
@@ -890,6 +925,10 @@ func (sys *system) discoverNodes() error {
 		return fmt.Errorf("failed to parse nodes with memory (%q): %v",
 			memoryNodeIDs, err)
 	}
+
+	sys.hasCPU = IDSetFromCPUSet(cpuMemNodes)
+	sys.hasMemory = IDSetFromCPUSet(memoryNodes)
+	sys.hasNormalMemory = IDSetFromCPUSet(normalMemNodes)
 
 	cpuNodesSlice := []int{}
 	for id, node := range sys.nodes {
