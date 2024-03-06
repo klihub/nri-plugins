@@ -16,15 +16,15 @@ package memory
 
 import (
 	"fmt"
+	"math"
 	"slices"
+	"strings"
 
 	logger "github.com/containers/nri-plugins/pkg/log"
+	"github.com/containers/nri-plugins/pkg/sysfs"
 	system "github.com/containers/nri-plugins/pkg/sysfs"
+	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 	idset "github.com/intel/goresctrl/pkg/utils"
-)
-
-var (
-	log = logger.Get("libmem")
 )
 
 type (
@@ -32,218 +32,382 @@ type (
 	IDSet = idset.IDSet
 )
 
-// Reservation of memory from a set of NUMA nodes.
-type Reservation map[ID]int64
+var (
+	NewIDSet = idset.NewIDSet
+	log      = logger.Get("libmem")
+)
 
-func (r Reservation) Add(id ID, amount int64) {
-	r[id] += amount
+// Request is a request to allocate some memory to a workload.
+type Request struct {
+	Workload string   // ID of workload this offer belongs to
+	Amount   int64    // amount of memory requested
+	Kind     KindMask // kind of memory requested
+	Nodes    []ID     // nodes to start allocating memory from
 }
 
-func (r Reservation) Amount() int64 {
-	total := int64(0)
-	for _, amount := range r {
-		total += amount
+// Offer represents potential allocation of some memory to a workload.
+//
+// An offer contains all the changes, including potential changes to
+// other workloads, which are necessary to fulfill the allocation.
+// An offer can be committed into an allocation provided that no new
+// allocation has taken place since the offer was created. Offers can
+// be used to compare various allocation alternatives for a workload.
+type Offer struct {
+	request  *Request         // allocation request
+	nodes    IDSet            // allocated nodes
+	updates  map[string]IDSet // updated workloads to fulfill the request
+	validity int64            // validity of this offer (wrt. Allocator.generation)
+}
+
+// Allocation represents some memory allocated to a workload.
+type Allocation struct {
+	request *Request // allocation request
+	nodes   IDSet    // nodes allocated to fulfill this request
+}
+
+// Allocator tracks memory allocations from a set of NUMA nodes.
+type Allocator struct {
+	nodes       map[ID]*Node
+	ids         []ID
+	allocations map[string]*Allocation
+	generation  int64
+}
+
+// Node represents allocatable memory in a NUMA node.
+type Node struct {
+	id         ID
+	kind       Kind
+	capacity   int64
+	movable    bool
+	distance   []int
+	closeCPUs  cpuset.CPUSet
+	byDistance map[Kind][][]ID
+	order      []IDSet
+	fallback   [][]ID
+}
+
+// AllocatorOption is an option for an allocator.
+type AllocatorOption func(*Allocator) error
+
+// WithNodes is an option to set the nodes an allocator can use.
+func WithNodes(nodes []*Node) AllocatorOption {
+	return func(a *Allocator) error {
+		if len(a.nodes) != 0 {
+			return fmt.Errorf("failed to set allocator nodes, already set")
+		}
+
+		nodeCnt := len(nodes)
+		for _, n := range nodes {
+			if _, ok := a.nodes[n.id]; ok {
+				return fmt.Errorf("failed to set allocator nodes, duplicate node %v", n.id)
+			}
+
+			if distCnt := len(n.distance); distCnt < nodeCnt {
+				return fmt.Errorf("%d distances set for node #%v, >= %d expected",
+					distCnt, n.id, nodeCnt)
+			}
+
+			a.nodes[n.id] = n
+			a.ids = append(a.ids, n.id)
+		}
+
+		return nil
 	}
-	return total
 }
 
-func (r Reservation) IDs() []ID {
-	ids := make([]ID, 0, len(r))
-	for id := range r {
-		ids = append(ids, id)
+// WithSystemNodes is an option to let the allocator discover and pick nodes.
+func WithSystemNodes(sys sysfs.System, pickers ...func(sysfs.Node) bool) AllocatorOption {
+	return func(a *Allocator) error {
+		if len(a.nodes) != 0 {
+			return fmt.Errorf("failed to set allocator nodes, already set")
+		}
+
+		for _, id := range sys.NodeIDs() {
+			sysNode := sys.Node(id)
+
+			picked := len(pickers) == 0
+			for _, p := range pickers {
+				if p(sysNode) {
+					picked = true
+					break
+				}
+			}
+			if !picked {
+				log.Info("node #%v was not picked, ignoring it...", id)
+				continue
+			}
+
+			memInfo, err := sysNode.MemoryInfo()
+			if err != nil {
+				return fmt.Errorf("failed to discover system node #%v: %v", id, err)
+			}
+
+			n := &Node{
+				id:        sysNode.ID(),
+				kind:      TypeToKind(sysNode.GetMemoryType()),
+				capacity:  int64(memInfo.MemTotal),
+				movable:   !sysNode.HasNormalMemory(),
+				distance:  slices.Clone(sysNode.Distance()),
+				closeCPUs: sysNode.CPUSet().Clone(),
+			}
+
+			a.nodes[id] = n
+			a.ids = append(a.ids, id)
+
+			log.Info("discovered and picked %s node #%v with %d capacity, close CPUs %s",
+				n.kind, n.id, n.capacity, n.closeCPUs.String())
+		}
+
+		return nil
+	}
+}
+
+// WithFallbackNodes is an option to manually set up/override fallback nodes for the allocator.
+func WithFallbackNodes(fallback map[ID][][]ID) AllocatorOption {
+	return func(a *Allocator) error {
+		if len(fallback) < len(a.nodes) {
+			return fmt.Errorf("failed to set fallback nodes, expected %d entries, got %d",
+				len(a.nodes), len(fallback))
+		}
+
+		for id, nodeFallback := range fallback {
+			n, ok := a.nodes[id]
+			if !ok {
+				return fmt.Errorf("failed to set fallback nodes, node #%v not found", id)
+			}
+
+			n.fallback = slices.Clone(nodeFallback)
+			for i, fbids := range nodeFallback {
+				n.fallback[i] = slices.Clone(fbids)
+			}
+		}
+		return nil
+	}
+}
+
+// NewAllocator creates an allocator with the given options.
+func NewAllocator(options ...AllocatorOption) (*Allocator, error) {
+	a := &Allocator{
+		nodes:       make(map[ID]*Node),
+		allocations: make(map[string]*Allocation),
+	}
+
+	for _, o := range options {
+		if err := o(a); err != nil {
+			return nil, err
+		}
+	}
+
+	slices.SortFunc(a.ids, func(a, b ID) int { return a - b })
+
+	for _, n := range a.nodes {
+		a.prepareNode(n)
+		if n.fallback != nil {
+			if err := a.verifyFallback(n); err != nil {
+				return nil, fmt.Errorf("fallback node verification failed: %w", err)
+			}
+		} else {
+			if err := a.setupFallbackByDistance(n); err != nil {
+				return nil, fmt.Errorf("failed to set up fallbacks by distance: %w", err)
+			}
+		}
+	}
+
+	a.logNodes()
+
+	return a, nil
+}
+
+// Get an offer for the given request.
+func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
+
+	return nil, nil
+}
+
+// Commit the given offer, turning it into an allocation.
+func (a *Allocator) Commit(o *Offer) ([]ID, []string, error) {
+	return nil, nil, nil
+}
+
+// Allocate the given request.
+func (a *Allocator) Allocate(req *Request) ([]ID, []string, error) {
+	o, err := a.GetOffer(req)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return a.Commit(o)
+}
+
+// Release the allocation of the given workload.
+func (a *Allocator) Release(workload string) error {
+	return nil
+}
+
+func (a *Allocator) NodeDistance(id1, id2 ID) int {
+	n1 := a.nodes[id1]
+	n2 := a.nodes[id2]
+	if n1 == nil || n2 == nil {
+		return math.MaxInt
+	}
+	return n1.distance[id2]
+}
+
+// GetClosestNodes returns the closest nodes matching the given kinds.
+func (a *Allocator) GetClosestNodes(nodeID ID, kinds KindMask) ([]ID, error) {
+	node, ok := a.nodes[nodeID]
+	if !ok {
+		return nil, fmt.Errorf("unknown node #%v", nodeID)
+	}
+
+	ids := NewIDSet()
+	for _, k := range kinds.Slice() {
+		closest := node.byDistance[k]
+		if len(closest) == 0 {
+			return nil, fmt.Errorf("no available %s nodes", k)
+		}
+		ids.Add(closest[0]...)
+	}
+
+	return ids.SortedMembers(), nil
+
+	/*
+	   ids := a.PickAndSortNodes(
+
+	   	KindMatcher(kinds),
+	   	DistanceSorter(node),
+
+	   )
+
+	   closest := []ID{}
+	   min := math.MaxInt
+
+	   	for _, id := range ids {
+	   		if id == nodeID {
+	   			continue
+	   		}
+
+	   		if !kinds.Has(a.nodes[id].kind) {
+	   			break
+	   		}
+
+	   		d := node.distance[id]
+	   		if d > min {
+	   			break
+	   		}
+
+	   		min = d
+	   		closest = append(closest, id)
+	   	}
+
+	   return closest, nil
+	*/
+}
+
+// GetClosestNodesForCPUs returns the set of matching nodes closest to a requested set.
+func (a *Allocator) GetClosestNodesForCPUs(cpus cpuset.CPUSet, kinds KindMask) []ID {
+	ids := NewIDSet()
+	for _, n := range a.nodes {
+		if cpus.Intersection(n.closeCPUs).IsEmpty() {
+			continue
+		}
+		if kinds.Has(n.kind) {
+			ids.Add(n.id)
+		} else {
+			closest, err := a.GetClosestNodes(n.id, kinds)
+			if err == nil {
+				ids.Add(closest...)
+			}
+		}
+	}
+	return ids.SortedMembers()
+}
+
+func (a *Allocator) PickNodes(predicate func(n *Node) bool) []ID {
+	var ids []ID
+	for _, id := range a.ids {
+		if predicate(a.nodes[id]) {
+			ids = append(ids, id)
+		}
 	}
 	return ids
 }
 
-func (r Reservation) IDSet() IDSet {
-	return idset.NewIDSet(r.IDs()...)
-}
+type NodePicker func(*Node) bool
+type NodeSorter func(ID, ID) int
 
-// Allocator tracks allocations from a set of NUMA nodes.
-type Allocator struct {
-	nodes map[ID]*Node
-	ids   []ID
-}
+func (a *Allocator) PickAndSortNodes(picker NodePicker, sorter NodeSorter) []ID {
+	var ids []ID
 
-func NewAllocator(nodes ...*Node) *Allocator {
-	a := &Allocator{
-		nodes: make(map[ID]*Node),
-		ids:   make([]ID, len(nodes)),
-	}
-
-	for _, n := range nodes {
-		if _, ok := a.nodes[n.id]; ok {
-			panic(fmt.Errorf("can't register %s node #%v, already registered", n.kind, n.id))
-		}
-		if distCnt, nodeCnt := len(n.distance), len(nodes); distCnt < nodeCnt {
-			panic(fmt.Errorf("only %d distances for %s node #%v, %d expected", distCnt,
-				n.kind, n.id, nodeCnt))
+	for _, id := range a.ids {
+		if picker(a.nodes[id]) {
+			ids = append(ids, id)
 		}
 	}
 
-	for i, n := range nodes {
-		a.nodes[n.id] = n
-		a.ids[i] = n.id
+	if sorter != nil {
+		slices.SortFunc(ids, sorter)
 	}
-	slices.SortFunc(a.ids, func(a, b ID) int { return a - b })
 
-	for _, n := range a.nodes {
-		if n.overflow != nil {
-			if err := a.verifyOverflow(n); err != nil {
-				panic(err)
-			}
+	return ids
+}
+
+func KindMatcher(kinds KindMask) func(n *Node) bool {
+	return func(n *Node) bool {
+		return kinds.Has(n.kind)
+	}
+}
+
+func DistanceSorter(n *Node) func(ID, ID) int {
+	return func(i, j ID) int {
+		if diff := n.distance[i] - n.distance[j]; diff != 0 {
+			return diff
 		} else {
-			if err := a.setupOverflowByDistance(n); err != nil {
-				panic(err)
-			}
+			return i - j
 		}
 	}
-
-	a.logOverflowNodes()
-
-	return a
 }
 
-func (a *Allocator) Allocate(amount int64, nodes []ID) ([]ID, error) {
-	r, _, err := a.AllocateKind(amount, nodes, KindMaskAny)
-	return r.IDs(), err
-}
-
-func (a *Allocator) AllocateKind(amount int64, nodes []ID, allow KindMask) (Reservation, []ID, error) {
-	if allow == 0 {
-		allow = KindMaskAny
-	}
-
-	free := int64(0)
-	scan := []IDSet{idset.NewIDSet()}
-	flat := idset.NewIDSet()
-	ocnt := 0
-
-	// collect primary nodes and see if they can fulfill the request
-	for _, id := range nodes {
-		n, ok := a.nodes[id]
-		if !ok {
-			return nil, nil, fmt.Errorf("can't allocate memory, unavailable node #%v", id)
+func (a *Allocator) prepareNode(node *Node) {
+	idsByDist := slices.Clone(a.ids)
+	slices.SortFunc(idsByDist, func(id1, id2 ID) int {
+		if diff := node.distance[id1] - node.distance[id2]; diff != 0 {
+			return diff
+		} else {
+			return id1 - id2
 		}
+	})
 
-		if !allow.Has(n.kind) || n.Available() == 0 {
+	byDistance := map[Kind][][]ID{}
+	for _, id := range idsByDist {
+		if id == node.id {
 			continue
 		}
 
-		free += n.Available()
-		scan[0].Add(id)
-		flat.Add(id)
-
-		if ocnt < len(n.overflow) {
-			ocnt = len(n.overflow)
-		}
-	}
-
-	// collect overflow fallback nodes until we can fulfill the request
-	if free < amount {
-		for level := 0; level < ocnt; level++ {
-			for _, id := range nodes {
-				n := a.nodes[id]
-				if level >= len(n.overflow) {
-					continue
-				}
-
-				for _, oid := range n.overflow[level] {
-					on := a.nodes[oid]
-					if !allow.Has(on.kind) || flat.Has(oid) {
-						continue
-					}
-
-					if len(scan) == 1+level {
-						scan = append(scan, idset.NewIDSet())
-					}
-
-					free += on.Available()
-					scan[1+level].Add(oid)
-					flat.Add(oid)
-				}
-			}
-
-			if free >= amount {
-				break
+		n := a.nodes[id]
+		ids := byDistance[n.kind]
+		if ids == nil {
+			ids = [][]ID{{id}}
+		} else {
+			d := node.distance[ids[len(ids)-1][0]]
+			if d == node.distance[id] {
+				ids[len(ids)-1] = append(ids[len(ids)-1], id)
+			} else {
+				ids = append(ids, []ID{id})
 			}
 		}
+		byDistance[n.kind] = ids
 	}
-
-	if free < amount {
-		return nil, nil, fmt.Errorf("can't allocate memory, only %d of %d available", free, amount)
-	}
-
-	// fill in reservation, spread allocation evenly at each level
-	full := idset.NewIDSet()
-	need := amount
-	r := Reservation{}
-NEXT:
-	for i := 0; i < len(scan); i++ {
-		ids := scan[i].SortedMembers()
-		for {
-			space := []ID{}
-			chunk := need / int64(len(ids))
-			extra := need % int64(len(ids))
-			for _, id := range ids {
-				cnt := a.nodes[id].Allocate(chunk + extra)
-				r.Add(id, cnt)
-
-				need -= cnt
-				if cnt > chunk {
-					extra -= cnt - chunk
-				}
-
-				if a.nodes[id].Available() == 0 {
-					full.Add(id)
-				} else {
-					space = append(space, id)
-				}
-			}
-			if need == 0 {
-				break NEXT
-			}
-			if len(space) == 0 {
-				continue NEXT
-			}
-			ids = space
-		}
-	}
-
-	if need > 0 {
-		panic(fmt.Errorf("internal error: failed to allocate %d memory from #%s, need %d more",
-			amount, flat.String(), need))
-	}
-
-	if full.Size() > 0 {
-		return r, full.Members(), nil
-	}
-
-	return r, nil, nil
+	node.byDistance = byDistance
 }
 
-func (a *Allocator) Release(r Reservation) error {
-	for id, amount := range r {
-		n, ok := a.nodes[id]
-		if !ok {
-			return fmt.Errorf("can't free memory (%d) from nodes #%s, unknown node #%v",
-				amount, r.IDSet().String(), id)
-		}
-		if err := n.Release(amount); err != nil {
-			return fmt.Errorf("can't free memory (%d) from nodes #%s: %w",
-				amount, r.IDSet().String(), err)
-		}
-	}
-
-	return nil
-}
-
-func (a *Allocator) verifyOverflow(n *Node) error {
-	for level, oids := range n.overflow {
-		for _, oid := range oids {
-			if _, ok := a.nodes[oid]; !ok {
-				return fmt.Errorf("%s node #%v, out-of-scope level %d overflow node #%v",
-					n.kind, n.id, level, oid)
+// Verify user provided fallback nodes.
+func (a *Allocator) verifyFallback(n *Node) error {
+	for level, fbids := range n.fallback {
+		for _, fbid := range fbids {
+			if _, ok := a.nodes[fbid]; !ok {
+				return fmt.Errorf("%s node #%v, out-of-scope level %d fallback node #%v",
+					n.kind, n.id, level, fbid)
 			}
 		}
 	}
@@ -251,8 +415,8 @@ func (a *Allocator) verifyOverflow(n *Node) error {
 	return nil
 }
 
-// Set up nodes for hanling allocations when nodes run out of capacity.
-func (a *Allocator) setupOverflowByDistance(n *Node) error {
+// Set up nodes for handling allocations when nodes run out of capacity.
+func (a *Allocator) setupFallbackByDistance(n *Node) error {
 	if len(a.nodes) == 1 {
 		return nil
 	}
@@ -275,40 +439,46 @@ func (a *Allocator) setupOverflowByDistance(n *Node) error {
 			n.kind, n.id, closest[0])
 	}
 
-	// set up overflow nodes, treating node with equal distance as an equivalence classes
+	// set up fallback nodes, treating all nodes with equal distance equally good
 	level := 0
 	prev := -1
-	overflow := [][]ID{}
+	fallback := [][]ID{}
 
-	for _, oid := range closest[1:len(a.ids)] {
-		dist := n.distance[oid]
+	for _, fbid := range closest[1:len(a.ids)] {
+		dist := n.distance[fbid]
 		if prev == -1 {
 			prev = dist
-			overflow = append(overflow, []ID{})
+			fallback = append(fallback, []ID{})
 		}
 		if dist != prev {
 			level++
-			overflow = append(overflow, []ID{})
+			fallback = append(fallback, []ID{})
 			prev = dist
 		}
-		overflow[level] = append(overflow[level], oid)
+		fallback[level] = append(fallback[level], fbid)
 	}
 
-	n.overflow = overflow
+	n.fallback = append([][]ID{{n.id}}, fallback...)
+	for i, fbids := range n.fallback {
+		n.order = append(n.order, NewIDSet(fbids...))
+		if i > 0 {
+			n.order[i].Add(n.order[i-1].Members()...)
+		}
+	}
 
 	return nil
 }
 
-func (a *Allocator) logOverflowNodes() {
+func (a *Allocator) logNodes() {
 	for _, id := range a.ids {
 		n := a.nodes[id]
 		level := 0
 		prev := -1
 		distances := [][]int{}
 
-		for _, oids := range n.overflow {
-			for _, oid := range oids {
-				dist := n.distance[oid]
+		for _, fbids := range n.fallback {
+			for _, fbid := range fbids {
+				dist := n.distance[fbid]
 				if dist != prev {
 					if prev != -1 {
 						level++
@@ -320,75 +490,33 @@ func (a *Allocator) logOverflowNodes() {
 			}
 		}
 
-		log.Info("%s node #%v: overflow %v (%v), distance %v", n.kind, n.id, n.overflow,
-			distances, n.distance)
+		log.Info("%s node #%v: fallback %v (%v), distance %v, order %v", n.kind, n.id, n.fallback,
+			distances, n.distance, n.order)
 	}
+
+	for _, id := range a.ids {
+		n := a.nodes[id]
+		for k := KindDRAM; k < KindMax; k++ {
+			log.Info("%s node #%v: %s nodes by distance: %v", n.kind, n.id, k, n.byDistance[k])
+		}
+	}
+
 }
 
-// Node tracks allocations from a single NUMA node.
-type Node struct {
-	id        ID
-	kind      Kind
-	capacity  int64
-	allocated int64
-	distance  []int
-	overflow  [][]ID
-}
-
-func NewNode(id ID, kind Kind, capacity int64, distance []int, overflow ...[]ID) *Node {
+func NewNode(id ID, kind Kind, capacity int64, movable bool, dist []int, closeCPUs cpuset.CPUSet, fallback [][]ID) *Node {
 	n := &Node{
-		id:       id,
-		kind:     kind,
-		capacity: capacity,
-		distance: slices.Clone(distance),
-		overflow: slices.Clone(overflow),
+		id:        id,
+		kind:      kind,
+		capacity:  capacity,
+		distance:  slices.Clone(dist),
+		closeCPUs: closeCPUs.Clone(),
+		fallback:  slices.Clone(fallback),
 	}
-	for i, oids := range n.overflow {
-		n.overflow[i] = slices.Clone(oids)
+	for i, fbids := range n.fallback {
+		n.fallback[i] = slices.Clone(fbids)
 	}
 
 	return n
-}
-
-func SystemNode(sysNode system.Node, overflow ...[]ID) *Node {
-	memInfo, err := sysNode.MemoryInfo()
-	if err != nil {
-		panic(fmt.Errorf("failed to get info for system Node #%v: %w", sysNode.ID(), err))
-	}
-
-	n := &Node{
-		id:       sysNode.ID(),
-		kind:     TypeToKind(sysNode.GetMemoryType()),
-		capacity: int64(memInfo.MemTotal),
-		distance: slices.Clone(sysNode.Distance()),
-		overflow: slices.Clone(overflow),
-	}
-	for i, oids := range n.overflow {
-		n.overflow[i] = slices.Clone(oids)
-	}
-
-	return n
-}
-
-func (n *Node) Clone() *Node {
-	if n == nil {
-		return nil
-	}
-
-	c := &Node{
-		id:        n.id,
-		kind:      n.kind,
-		capacity:  n.capacity,
-		allocated: n.allocated,
-		distance:  slices.Clone(n.distance),
-		overflow:  slices.Clone(n.overflow),
-	}
-
-	for i, oids := range c.overflow {
-		c.overflow[i] = slices.Clone(oids)
-	}
-
-	return c
 }
 
 func (n *Node) ID() ID {
@@ -403,40 +531,16 @@ func (n *Node) Capcity() int64 {
 	return n.capacity
 }
 
-func (n *Node) Allocated() int64 {
-	return n.allocated
+func (n *Node) CloseCPUs() cpuset.CPUSet {
+	return n.closeCPUs
+}
+
+func (n *Node) IsMovable() bool {
+	return n.movable
 }
 
 func (n *Node) Distance() []int {
 	return slices.Clone(n.distance)
-}
-
-func (n *Node) Overflow() [][]ID {
-	overflow := slices.Clone(n.overflow)
-	for i, oids := range overflow {
-		overflow[i] = slices.Clone(oids)
-	}
-	return overflow
-}
-
-func (n *Node) Available() int64 {
-	return n.capacity - n.allocated
-}
-
-func (n *Node) Allocate(amount int64) int64 {
-	if amount > n.Available() {
-		amount = n.Available()
-	}
-	n.allocated += amount
-	return amount
-}
-
-func (n *Node) Release(amount int64) error {
-	if n.allocated < amount {
-		return fmt.Errorf("can't free memory from %s node #%v, only %d allocated (< %d)",
-			n.kind, n.id, n.allocated, amount)
-	}
-	return nil
 }
 
 // Kind describes known types of memory.
@@ -444,7 +548,7 @@ type Kind int
 
 const (
 	// Ordinary DRAM.
-	KindDRAM = iota
+	KindDRAM Kind = iota
 	// Persistent memory (typically available in high capacity).
 	KindPMEM
 	// High-bandwidth memory (typically available in low capacity).
@@ -495,7 +599,15 @@ func MaskForKinds(kinds ...Kind) KindMask {
 	return mask
 }
 
-func (m KindMask) KindSlice() []Kind {
+func MaskForTypes(types ...system.MemoryType) KindMask {
+	mask := KindMask(0)
+	for _, t := range types {
+		mask |= (1 << TypeToKind(t))
+	}
+	return mask
+}
+
+func (m KindMask) Slice() []Kind {
 	var kinds []Kind
 	if m.Has(KindDRAM) {
 		kinds = append(kinds, KindDRAM)
@@ -528,4 +640,14 @@ func (m KindMask) Has(kinds ...Kind) bool {
 		}
 	}
 	return true
+}
+
+func (m KindMask) String() string {
+	kinds := []string{}
+	for k := KindDRAM; k < KindMax; k++ {
+		if m.Has(k) {
+			kinds = append(kinds, k.String())
+		}
+	}
+	return "{" + strings.Join(kinds, ",") + "}"
 }
