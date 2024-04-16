@@ -38,10 +38,12 @@ const (
 	AllocIdleNodes
 	// AllocIdleClusters requests allocation of full idle CPU clusters.
 	AllocIdleClusters
+	// AllocIdleLLCGroups requests allocation of full idle CPU groups.
+	AllocIdleLLCGroups
 	// AllocIdleCores requests allocation of full idle cores (all threads in core).
 	AllocIdleCores
 	// AllocDefault is the default allocation preferences.
-	AllocDefault = AllocIdlePackages | AllocIdleClusters | AllocIdleCores
+	AllocDefault = AllocIdlePackages | AllocIdleClusters | AllocIdleLLCGroups | AllocIdleCores
 
 	logSource = "cpuallocator"
 )
@@ -399,6 +401,188 @@ func (a *allocatorHelper) takeIdleClusters() {
 	}
 }
 
+// Allocate full idle CPU last-level cache groups.
+func (a *allocatorHelper) takeIdleLLCGroups() {
+	var (
+		offline  = a.sys.OfflineCPUs()
+		pickIdle = func(c *llcGroup) (bool, cpuset.CPUSet) {
+			// we only take E-groups for low-prio requests
+			if a.prefer != PriorityLow && c.kind == sysfs.EfficientCore {
+				a.Debug("  - omit %s, CPU preference is %s", c, a.prefer)
+				return false, emptyCPUSet
+			}
+			// we only take P-groups for other than low-prio requests
+			if a.prefer == PriorityLow && c.kind == sysfs.PerformanceCore {
+				a.Debug("  - omit %s, CPU preference is %s", c, a.prefer)
+				return false, emptyCPUSet
+			}
+
+			// we only take fully idle groups
+			cset := c.cpus.Difference(offline)
+			free := cset.Intersection(a.from)
+			if free.IsEmpty() || !free.Equals(cset) {
+				a.Debug("  - omit %s, %d usable CPUs (%s)", c, free.Size(), free)
+				return false, emptyCPUSet
+			}
+
+			a.Debug("  + pick %s, %d usable CPUs (%s)", c, free.Size(), free)
+			return true, free
+		}
+		preferTightestFit = func(cA, cB *llcGroup, pkgA, pkgB, dieA, dieB int, csetA, csetB cpuset.CPUSet) (r int) {
+			defer func() {
+				if r < 0 {
+					a.Debug("  + prefer %s", cA)
+					a.Debug("      over %s", cB)
+				}
+				if r > 0 {
+					a.Debug("  + prefer %s", cB)
+					a.Debug("      over %s", cA)
+				}
+				a.Debug("  - misfit %s", cA)
+				a.Debug("       and %s", cB)
+			}()
+
+			// prefer group which alone can satisfy the request, preferring tighter
+			cntA, cntB := csetA.Size(), csetB.Size()
+			if cntA >= a.cnt && cntB < a.cnt {
+				return -1
+			}
+			if cntA < a.cnt && cntB >= a.cnt {
+				return 1
+			}
+			if cntA >= a.cnt && cntB >= a.cnt {
+				if diff := cntA - cntB; diff != 0 {
+					return diff
+				}
+				// do stable sort: prefer smaller package, die, and group IDs
+				if cA.pkg != cB.pkg {
+					return cA.pkg - cB.pkg
+				}
+				if cA.die != cB.die {
+					return cA.die - cB.die
+				}
+				return cA.id - cB.id
+			}
+
+			// prefer die which alone can satisfy the request, preferring tighter
+			if dieA >= a.cnt && dieB < a.cnt {
+				return -1
+			}
+			if dieA < a.cnt && dieB >= a.cnt {
+				return 1
+			}
+			if dieA >= a.cnt && dieB >= a.cnt {
+				if diff := dieA - dieB; diff != 0 {
+					return diff
+				}
+				// do stable sort: prefer smaller package, die, and group IDs
+				if cA.pkg != cB.pkg {
+					return cA.pkg - cB.pkg
+				}
+				if cA.die != cB.die {
+					return cA.die - cB.die
+				}
+				return cA.id - cB.id
+			}
+
+			// prefer package which alone can satisfy the request, preferring tighter
+			if pkgA >= a.cnt && pkgB < a.cnt {
+				return -1
+			}
+			if pkgA < a.cnt && pkgB >= a.cnt {
+				return 1
+			}
+			if pkgA >= a.cnt && pkgB >= a.cnt {
+				if diff := pkgA - pkgB; diff != 0 {
+					return diff
+				}
+				// do stable sort: prefer smaller package, die, and group IDs
+				if cA.pkg != cB.pkg {
+					return cA.pkg - cB.pkg
+				}
+				if cA.die != cB.die {
+					return cA.die - cB.die
+				}
+				return cA.id - cB.id
+			}
+
+			// both unusable (don't need stable sort, we won't use them anyway)
+			return 0
+		}
+
+		sorter = &llcGroupSorter{
+			pick: pickIdle,
+			sort: preferTightestFit,
+		}
+	)
+
+	a.Debug("* takeIdleLLCGroups()...")
+
+	if len(a.topology.llcGroups) <= 1 {
+		return
+	}
+
+	a.Debug("looking for %d %s CPUs from %s", a.cnt, a.prefer, a.from)
+
+	a.sortLLCGroups(sorter)
+
+	var (
+		groups    = sorter.groups
+		pkgCPUCnt = sorter.pkgCPUCnt
+		cpus      = sorter.cpus
+	)
+
+	if len(groups) < 1 {
+		return
+	}
+
+	// tightest-fit group is a perfect fit, use it
+	c := groups[0]
+	cset := cpus[c]
+	if cset.Size() == a.cnt {
+		log.Debug("=> picking single %s", c)
+		a.result = a.result.Union(cset)
+		a.from = a.from.Difference(cset)
+		a.cnt -= cset.Size()
+		return
+	}
+
+	// tightest-fit groups is too big, so allocation can't consume any groups fully
+	if cset.Size() > a.cnt {
+		log.Debug(" => tightest-fit group too big, can't consume a full group")
+		return
+	}
+
+	// bail out if no package can satisfy the allocation
+	if cnt := pkgCPUCnt[c.pkg]; cnt < a.cnt {
+		log.Debug(" => no package can satisfy the allocation, bail out")
+	}
+
+	// start consuming groups, until we're done
+	for i, c := range groups {
+		cset := cpus[c]
+
+		if a.cnt < cset.Size() {
+			log.Debug("=> %d more CPUs needed after allocation of %d groups", a.cnt, i)
+			// XXX TODO: should restrict a.from to the same package, if that has enough
+			// CPUs to satisfy the request
+			return
+		}
+
+		log.Debug("=> picking %d. %s", i, c)
+
+		if a.cnt >= cset.Size() {
+			a.result = a.result.Union(cset)
+			a.from = a.from.Difference(cset)
+			a.cnt -= cset.Size()
+		}
+
+		if a.cnt == 0 {
+			return
+		}
+	}
+}
+
 // Allocate full idle CPU cores.
 func (a *allocatorHelper) takeIdleCores() {
 	a.Debug("* takeIdleCores()...")
@@ -552,6 +736,9 @@ func (a *allocatorHelper) allocate() cpuset.CPUSet {
 		if a.cnt > 0 && (a.flags&AllocIdleClusters) != 0 {
 			a.takeIdleClusters()
 		}
+		if a.cnt > 0 && (a.flags&AllocIdleLLCGroups) != 0 {
+			a.takeIdleLLCGroups()
+		}
 		if a.cnt > 0 && (a.flags&AllocIdleCores) != 0 {
 			a.takeIdleCores()
 		}
@@ -642,6 +829,85 @@ func (a *allocatorHelper) sortCPUClusters(s *clusterSorter) {
 	}
 
 	s.clusters = clusters
+	s.pkgCPUCnt = pkgCPUCnt
+	s.dieCPUCnt = dieCPUCnt
+	s.cpus = cpus
+}
+
+type llcGroupSorter struct {
+	// function to pick or ignore a cache group
+	pick func(*llcGroup) (bool, cpuset.CPUSet)
+	// function to sort slice of picked cache clusters
+	sort func(a, b *llcGroup, pkgCntA, pkgCntB, dieCntA, dieCntB int, cpusA, cpusB cpuset.CPUSet) int
+
+	// resulting groups, available CPU count per package and die, available CPUs per group
+	groups    []*llcGroup
+	pkgCPUCnt map[idset.ID]int
+	dieCPUCnt map[idset.ID]map[idset.ID]int
+	cpus      map[*llcGroup]cpuset.CPUSet
+}
+
+func (a *allocatorHelper) sortLLCGroups(s *llcGroupSorter) {
+	var (
+		groups    = []*llcGroup{}
+		pkgCPUCnt = map[idset.ID]int{}
+		dieCPUCnt = map[idset.ID]map[idset.ID]int{}
+		cpus      = map[*llcGroup]cpuset.CPUSet{}
+	)
+
+	a.Debug("picking suitable cache groups")
+
+	for _, g := range a.topology.llcGroups {
+		var cset cpuset.CPUSet
+
+		// pick or ignore group, determine usable group CPUs
+		if s.pick == nil {
+			cset = g.cpus
+		} else {
+			pick, usable := s.pick(g)
+			if !pick || usable.Size() == 0 {
+				continue
+			}
+
+			cset = usable
+		}
+
+		// collect group and usable CPUs
+		groups = append(groups, g)
+		cpus[g] = cset
+
+		// count usable CPUs per package and die
+		if _, ok := dieCPUCnt[g.pkg]; !ok {
+			dieCPUCnt[g.pkg] = map[idset.ID]int{}
+		}
+		dieCPUCnt[g.pkg][g.die] += cset.Size()
+		pkgCPUCnt[g.pkg] += cset.Size()
+	}
+
+	if a.DebugEnabled() {
+		log.Debug("number of collected usable CPUs:")
+		for pkg, cnt := range pkgCPUCnt {
+			log.Debug("  - package #%d: %d", pkg, cnt)
+		}
+		for pkg, dies := range dieCPUCnt {
+			for die, cnt := range dies {
+				log.Debug("  - die #%d/%d %d", pkg, die, cnt)
+			}
+		}
+	}
+
+	// sort collected groups
+	if s.sort != nil {
+		a.Debug("sorting picked groups")
+		slices.SortFunc(groups, func(cA, cB *llcGroup) int {
+			pkgCPUsA, pkgCPUsB := pkgCPUCnt[cA.pkg], pkgCPUCnt[cB.pkg]
+			dieCPUsA, dieCPUsB := dieCPUCnt[cA.pkg][cA.die], dieCPUCnt[cB.pkg][cB.die]
+			cpusA, cpusB := cpus[cA], cpus[cB]
+			return s.sort(cA, cB, pkgCPUsA, pkgCPUsB, dieCPUsA, dieCPUsB, cpusA, cpusB)
+		})
+	}
+
+	s.groups = groups
 	s.pkgCPUCnt = pkgCPUCnt
 	s.dieCPUCnt = dieCPUCnt
 	s.cpus = cpus
