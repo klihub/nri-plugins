@@ -410,6 +410,13 @@ func (a *allocatorHelper) takeLLCGroups() {
 		return
 	}
 
+	if a.cnt < 2 {
+		// XXX TODO(klihub): we could also decide based on some criteria, if it was better
+		// to handle such containers here and, for instance, pack them tightly into shared
+		// LLC groups.
+		return
+	}
+
 	//
 	// The allocation strategy here is roughly the following:
 	//
@@ -424,8 +431,10 @@ func (a *allocatorHelper) takeLLCGroups() {
 	// 4. bail out if no single package can satisfy the request
 	// 5. allocate preferred groups
 	//    a. take as many full groups as we can
-	//    b. if we need partial allocation try doing it from usable (fragmented) groups
-	//    c. if we have none, split up a preferred (idle) one as needed
+	//    b. split up a preferred group if we have to
+	//    /* this is how we used to do it, but it is now commented out: */
+	//    /*b. if we need partial allocation try doing it from usable (fragmented) groups*/
+	//    /*c. if we have none, split up a preferred (idle) one as needed*/
 	// 6. allocate usable grups
 	//    a. try allocating a single group with exactly matching size (IOW free CPUs)
 	//    b. try allocating the smallest number of groups of a single size
@@ -697,11 +706,11 @@ func (a *allocatorHelper) takeLLCGroups() {
 
 	switch {
 	case len(sorter.prefer) > 0:
-		chosenPkg := sorter.prefer[0].pkg
+		chosenPkg = sorter.prefer[0].pkg
 		preferPkgCPUs = sorter.preferPkgCPUCount(chosenPkg)
 		usablePkgCPUs = sorter.usablePkgCPUCount(chosenPkg)
 	case len(sorter.usable) > 0:
-		chosenPkg := sorter.usable[0].pkg
+		chosenPkg = sorter.usable[0].pkg
 		usablePkgCPUs = sorter.usablePkgCPUCount(chosenPkg)
 	}
 
@@ -716,10 +725,14 @@ func (a *allocatorHelper) takeLLCGroups() {
 
 	log.Debug("trying to take idle cache groups...")
 	for i, g := range sorter.prefer {
+		if cnt == 0 {
+			break
+		}
+
 		cset := sorter.cpus[g]
 
 		if cnt >= cset.Size() {
-			log.Debug("=> pick idle cache group %d. %s", i, g)
+			log.Debug("=> took full idle cache group %d. %s", i, g)
 
 			result = result.Union(cset)
 			from = from.Difference(cset)
@@ -727,23 +740,37 @@ func (a *allocatorHelper) takeLLCGroups() {
 			continue
 		}
 
-		// need to partially allocate from this group if we have no other usable groups
-		if cnt > usablePkgCPUs {
-			ta := newAllocatorHelper(a.sys, a.topology)
-			ta.prefer = a.prefer
-			ta.flags = AllocIdleCores
-			ta.from = cset
-			ta.cnt = cnt
-			use := ta.allocate()
+		/*
+			// need to partially allocate from this group if we have no other usable groups
+			if cnt > usablePkgCPUs {
+					ta := newAllocatorHelper(a.sys, a.topology)
+					ta.prefer = a.prefer
+					ta.flags = AllocIdleCores
+					ta.from = cset
+					ta.cnt = cnt
+					use := ta.allocate()
 
-			log.Debug("=> pick %d CPUs (%s) of idle cache group %d. %s", use.Size(), use, i, g)
+					log.Debug("=> pick %d CPUs (%s) of idle cache group %d. %s", use.Size(), use, i, g)
 
-			result = result.Union(use)
-			from = from.Difference(use)
-			cnt -= use.Size()
-		}
+					result = result.Union(use)
+					from = from.Difference(use)
+					cnt -= use.Size()
+				}
+		*/
 
-		break
+		// partially allocate the rest from this group
+		ta := newAllocatorHelper(a.sys, a.topology)
+		ta.prefer = a.prefer
+		ta.flags = AllocIdleCores
+		ta.from = cset
+		ta.cnt = cnt
+		use := ta.allocate()
+
+		log.Debug("=> took %d CPUs (%s) from idle cache group %d. %s", use.Size(), use, i, g)
+
+		result = result.Union(use)
+		from = from.Difference(use)
+		cnt -= use.Size()
 	}
 
 	if cnt == 0 {
@@ -795,7 +822,7 @@ func (a *allocatorHelper) takeLLCGroups() {
 		g := groups[0]
 		cset := sorter.cpus[g]
 
-		log.Debug("=> pick %d CPUs (%s) of usable cache group %s", cnt, cset, g)
+		log.Debug("=> took reamining %d CPUs (%s) of usable cache group %s", cnt, cset, g)
 
 		result = result.Union(cset)
 		from = from.Difference(cset)
@@ -829,7 +856,7 @@ func (a *allocatorHelper) takeLLCGroups() {
 		for i, g := range groupsBySize[size] {
 			cset := sorter.cpus[g]
 
-			log.Debug("=> pick %d./%d %d CPUs (%s) of usable cache group of size %d %s",
+			log.Debug("=> took %d./%d %d remaining CPUs (%s) of usable cache group of size %d %s",
 				i+1, take, cset.Size(), cset, size, g)
 
 			result = result.Union(cset)
@@ -876,7 +903,7 @@ func (a *allocatorHelper) takeLLCGroups() {
 			break
 		}
 
-		log.Debug("=> pick %d./%d CPUs (%s) of usable cache group %s", i, grpCnt, cset, g)
+		log.Debug("=> took %d./%d remaining CPUs (%s) of usable cache group %s", i, grpCnt, cset, g)
 
 		result = result.Union(cset)
 		from = from.Difference(cset)
@@ -895,7 +922,7 @@ func (a *allocatorHelper) takeLLCGroups() {
 		ta.cnt = cnt
 		use := ta.allocate()
 
-		log.Debug("=> pick %d/%d %d CPUs (%s) of last cache group %s",
+		log.Debug("=> took %d./%d %d CPUs (%s) from cache group %s",
 			grpCnt, grpCnt, use.Size(), use, g)
 
 		result = result.Union(use)
