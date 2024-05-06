@@ -15,6 +15,7 @@
 package libmem_test
 
 import (
+	"github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 
@@ -260,4 +261,56 @@ func TestGetAvailableKinds(t *testing.T) {
 
 	kinds := a.GetAvailableKinds()
 	require.Equal(t, []Kind{KindDRAM, KindPMEM}, kinds.Slice())
+}
+
+func TestExpand(t *testing.T) {
+	var (
+		sysRoot = "./testdata/sample2"
+		sys     sysfs.System
+		err     error
+		a       *Allocator
+	)
+
+	sys, err = sysfs.DiscoverSystemAt(sysRoot + "/sys")
+	require.Nil(t, err)
+	require.NotNil(t, sys)
+
+	a, err = NewAllocator(WithSystemNodes(sys))
+	require.Nil(t, err)
+	require.NotNil(t, a)
+
+	ids := a.GetNodeIDs()
+	kinds := a.GetAvailableKinds()
+
+	for _, id := range ids {
+		for _, k := range kinds.Slice() {
+			set := NewIDSet(id)
+			for {
+				exp, err := a.Expand(set.SortedMembers(), MaskForKinds(k))
+				if err == nil {
+					log.Info("onekind: expanding %v by %v nodes gave %v", set, k, exp)
+					set.Add(exp...)
+					continue
+				}
+
+				log.Error("onekind: failed to expand %v with %v nodes: %v", set, k, err)
+				break
+			}
+		}
+	}
+
+	for _, id := range ids {
+		set := NewIDSet(id)
+		for {
+			exp, err := a.Expand(set.SortedMembers(), kinds)
+			if err == nil {
+				log.Info("allkinds: expanding %v by %v nodes gave %v", set, kinds, exp)
+				set.Add(exp...)
+				continue
+			}
+
+			log.Error("allkinds: failed to expand %v with %v nodes: %v", set, kinds, err)
+			break
+		}
+	}
 }

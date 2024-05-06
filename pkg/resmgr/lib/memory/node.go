@@ -20,14 +20,21 @@ import (
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
+type distance struct {
+	vector []int         // distance vector, distances by node ID
+	sorted []int         // unique distances sorted in ascending order
+	idsets map[int]IDSet // nodes by distance
+}
+
 // Node represents allocatable memory in a NUMA node.
 type Node struct {
-	id         ID
-	kind       Kind
-	capacity   int64
-	movable    bool
-	distance   []int
-	closeCPUs  cpuset.CPUSet
+	id        ID
+	kind      Kind
+	capacity  int64
+	movable   bool
+	distance  distance
+	closeCPUs cpuset.CPUSet
+
 	byDistance map[Kind][][]ID
 	order      []IDSet
 	fallback   [][]ID
@@ -38,9 +45,12 @@ func NewNode(id ID, kind Kind, capacity int64, movable bool, dist []int, closeCP
 		id:        id,
 		kind:      kind,
 		capacity:  capacity,
-		distance:  slices.Clone(dist),
 		closeCPUs: closeCPUs.Clone(),
 		fallback:  slices.Clone(fallback),
+
+		distance: distance{
+			vector: slices.Clone(dist),
+		},
 	}
 	for i, fbids := range n.fallback {
 		n.fallback[i] = slices.Clone(fbids)
@@ -70,5 +80,5 @@ func (n *Node) IsMovable() bool {
 }
 
 func (n *Node) Distance() []int {
-	return slices.Clone(n.distance)
+	return slices.Clone(n.distance.vector)
 }

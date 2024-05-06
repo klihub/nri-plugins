@@ -162,14 +162,88 @@ func (a *Allocator) Distance(id1, id2 ID) int {
 	if n1 == nil || n2 == nil {
 		return math.MaxInt
 	}
-	return n1.distance[id2]
+	return n1.distance.vector[id2]
+}
+
+// Expand the given set of nodes with the closest new set of nodes of given kinds.
+func (a *Allocator) Expand(from []ID, kinds KindMask) ([]ID, error) {
+	// Notes:
+	// This might be too greedily expanding nodes now. It tries to find one expansion
+	// node of each kind for each node already present in the set. IOW,
+	//
+	//   - for each requested node kind
+	//     - for each node already present in the set
+	//       - find node set with shortest distance and one or more node not in the set
+	//       - add that set to the expansion
+	//
+	// This seems to work reasonably when the starting node set has been set up
+	// with miminal distances like in the topology-aware policy.
+	//
+	// I think ideally what we'd like to have is
+	//   - for each requested node kind
+	//     - find the minimum distance for which we can add a new node
+	//     - for each node present in the original set
+	//       - find all new nodes of the same kind and distance
+	//       - add them to the expansion
+	//
+	// I am not sure if these would always produce the same result even for
+	// topology-aware like node sets...
+	//
+
+	expand := NewIDSet()
+	for _, k := range kinds.Slice() {
+		for _, id := range from {
+			n := a.nodes[id]
+			rightKind := func(o *Node) bool { return o.Kind() == k }
+			for _, d := range n.distance.sorted[1:] {
+				ids := a.FilterNodeIDs(n.distance.idsets[d], rightKind)
+				ids.Del(from...)
+				if ids.Size() > 0 {
+					expand.Add(ids.Members()...)
+					break
+				}
+			}
+		}
+	}
+
+	if expand.Size() == 0 {
+		return []ID{}, fmt.Errorf("failed to expand nodes %v with %v nodes", from, kinds)
+	}
+
+	return expand.SortedMembers(), nil
+}
+
+func (a *Allocator) FilterNodeIDs(ids IDSet, filter func(*Node) bool) IDSet {
+	filtered := NewIDSet()
+	for _, id := range ids.Members() {
+		if filter(a.nodes[id]) {
+			filtered.Add(id)
+		}
+	}
+	return filtered
 }
 
 // Prepare a node to be used by an allocator.
 func (a *Allocator) prepareNode(node *Node) {
+	idsets := map[int]IDSet{}
+	for _, id := range a.ids {
+		d := node.Distance()[id]
+		log.Info("*** node %v has neighbor %v at distance %v", node.id, id, d)
+		if set, ok := idsets[d]; ok {
+			set.Add(id)
+		} else {
+			idsets[d] = NewIDSet(id)
+		}
+	}
+	node.distance.idsets = idsets
+	for d := range node.distance.idsets {
+		node.distance.sorted = append(node.distance.sorted, d)
+	}
+	slices.Sort(node.distance.sorted)
+
 	idsByDist := slices.Clone(a.ids)
 	slices.SortFunc(idsByDist, func(id1, id2 ID) int {
-		if diff := node.distance[id1] - node.distance[id2]; diff != 0 {
+		if diff := node.distance.vector[id1] - node.distance.vector[id2]; diff != 0 {
 			return diff
 		} else {
 			return id1 - id2
@@ -187,8 +261,8 @@ func (a *Allocator) prepareNode(node *Node) {
 		if ids == nil {
 			ids = [][]ID{{id}}
 		} else {
-			d := node.distance[ids[len(ids)-1][0]]
-			if d == node.distance[id] {
+			d := node.distance.vector[ids[len(ids)-1][0]]
+			if d == node.distance.vector[id] {
 				ids[len(ids)-1] = append(ids[len(ids)-1], id)
 			} else {
 				ids = append(ids, []ID{id})
@@ -230,7 +304,7 @@ func (a *Allocator) setupFallbackByDistance(n *Node) error {
 		if b == n.id {
 			return 1
 		}
-		return n.distance[a] - n.distance[b]
+		return n.distance.vector[a] - n.distance.vector[b]
 	})
 
 	if closest[0] != n.id {
@@ -244,7 +318,7 @@ func (a *Allocator) setupFallbackByDistance(n *Node) error {
 	fallback := [][]ID{}
 
 	for _, fbid := range closest[1:len(a.ids)] {
-		dist := n.distance[fbid]
+		dist := n.distance.vector[fbid]
 		if prev == -1 {
 			prev = dist
 			fallback = append(fallback, []ID{})
@@ -277,7 +351,7 @@ func (a *Allocator) logNodes() {
 
 		for _, fbids := range n.fallback {
 			for _, fbid := range fbids {
-				dist := n.distance[fbid]
+				dist := n.distance.vector[fbid]
 				if dist != prev {
 					if prev != -1 {
 						level++
@@ -290,7 +364,23 @@ func (a *Allocator) logNodes() {
 		}
 
 		log.Info("%s node #%v: fallback %v (%v), distance %v, order %v", n.kind, n.id, n.fallback,
-			distances, n.distance, n.order)
+			distances, n.distance.vector, n.order)
+
+		for idx, d := range n.distance.sorted {
+			set, ok := n.distance.idsets[d]
+			if !ok {
+				log.Error("***** no idsets for distance %v!!!", d)
+				continue
+			}
+			log.Info("*** %s node #%v: nodes set %v at distance %v", n.kind, n.id, set, d)
+			if idx == 0 {
+				if set.Size() != 1 || set.Members()[0] != id {
+					log.Error("***** %d node #%v is not it's own closest neighbor!!!",
+						n.kind, n.id)
+				}
+			}
+		}
+
 	}
 
 	for _, id := range a.ids {

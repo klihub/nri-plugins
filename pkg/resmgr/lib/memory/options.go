@@ -37,7 +37,7 @@ func WithNodes(nodes []*Node) AllocatorOption {
 				return fmt.Errorf("failed to set allocator nodes, duplicate node %v", n.id)
 			}
 
-			if distCnt := len(n.distance); distCnt < nodeCnt {
+			if distCnt := len(n.distance.vector); distCnt < nodeCnt {
 				return fmt.Errorf("%d distances set for node #%v, >= %d expected",
 					distCnt, n.id, nodeCnt)
 			}
@@ -82,8 +82,10 @@ func WithSystemNodes(sys sysfs.System, pickers ...func(sysfs.Node) bool) Allocat
 				kind:      TypeToKind(sysNode.GetMemoryType()),
 				capacity:  int64(memInfo.MemTotal),
 				movable:   !sysNode.HasNormalMemory(),
-				distance:  slices.Clone(sysNode.Distance()),
 				closeCPUs: sysNode.CPUSet().Clone(),
+				distance: distance{
+					vector: slices.Clone(sysNode.Distance()),
+				},
 			}
 
 			a.nodes[id] = n
