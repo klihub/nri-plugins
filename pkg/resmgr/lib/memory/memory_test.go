@@ -282,18 +282,22 @@ func TestExpand(t *testing.T) {
 	ids := a.GetNodeIDs()
 	kinds := a.GetAvailableKinds()
 
+	for _, id := range a.GetNodeIDs() {
+		log.Info("=== %v: %v", id, a.GetNode(id).Distance())
+	}
+
 	for _, id := range ids {
 		for _, k := range kinds.Slice() {
 			set := NewIDSet(id)
 			for {
-				exp, err := a.Expand(set.SortedMembers(), MaskForKinds(k))
-				if err == nil {
-					log.Info("onekind: expanding %v by %v nodes gave %v", set, k, exp)
+				exp, mask := a.Expand(set.SortedMembers(), MaskForKinds(k))
+				if mask != 0 {
+					log.Info("onekind: expanding %v by %v nodes gave %v (%v)", set, k, exp, mask)
 					set.Add(exp...)
 					continue
 				}
 
-				log.Error("onekind: failed to expand %v with %v nodes: %v", set, k, err)
+				log.Error("onekind: failed to expand %v with %v nodes", set, k)
 				break
 			}
 		}
@@ -302,14 +306,14 @@ func TestExpand(t *testing.T) {
 	for _, id := range ids {
 		set := NewIDSet(id)
 		for {
-			exp, err := a.Expand(set.SortedMembers(), kinds)
-			if err == nil {
-				log.Info("allkinds: expanding %v by %v nodes gave %v", set, kinds, exp)
+			exp, mask := a.Expand(set.SortedMembers(), kinds)
+			if mask != 0 {
+				log.Info("allkinds: expanding %v by %v nodes gave %v (%v)", set, kinds, exp, mask)
 				set.Add(exp...)
 				continue
 			}
 
-			log.Error("allkinds: failed to expand %v with %v nodes: %v", set, kinds, err)
+			log.Error("allkinds: failed to expand %v with %v nodes", set, kinds)
 			break
 		}
 	}

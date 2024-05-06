@@ -165,52 +165,46 @@ func (a *Allocator) Distance(id1, id2 ID) int {
 	return n1.distance.vector[id2]
 }
 
-// Expand the given set of nodes with the closest new set of nodes of given kinds.
-func (a *Allocator) Expand(from []ID, kinds KindMask) ([]ID, error) {
-	// Notes:
-	// This might be too greedily expanding nodes now. It tries to find one expansion
-	// node of each kind for each node already present in the set. IOW,
-	//
-	//   - for each requested node kind
-	//     - for each node already present in the set
-	//       - find node set with shortest distance and one or more node not in the set
-	//       - add that set to the expansion
-	//
-	// This seems to work reasonably when the starting node set has been set up
-	// with miminal distances like in the topology-aware policy.
-	//
-	// I think ideally what we'd like to have is
-	//   - for each requested node kind
-	//     - find the minimum distance for which we can add a new node
-	//     - for each node present in the original set
-	//       - find all new nodes of the same kind and distance
-	//       - add them to the expansion
-	//
-	// I am not sure if these would always produce the same result even for
-	// topology-aware like node sets...
-	//
+// Expand the given set of nodes with the closest set of allowed kinds.
+func (a *Allocator) Expand(from []ID, allow KindMask) ([]ID, KindMask) {
+	// For each allowed kind, find all nodes with a minimum distance
+	// between any node in the set and any node not in the set yet.
+	// Add all such nodes to the expansion.
 
-	expand := NewIDSet()
-	for _, k := range kinds.Slice() {
+	nodes := NewIDSet()
+	kinds := KindMask(0)
+	for _, k := range allow.Slice() {
+		var (
+			filter  = func(o *Node) bool { return o.Kind() == k }
+			distMap = map[int]IDSet{}
+			minDist = math.MaxInt
+		)
+
 		for _, id := range from {
 			n := a.nodes[id]
-			rightKind := func(o *Node) bool { return o.Kind() == k }
 			for _, d := range n.distance.sorted[1:] {
-				ids := a.FilterNodeIDs(n.distance.idsets[d], rightKind)
+				ids := a.FilterNodeIDs(n.distance.idsets[d], filter)
 				ids.Del(from...)
-				if ids.Size() > 0 {
-					expand.Add(ids.Members()...)
-					break
+				if ids.Size() == 0 || minDist < d {
+					continue
 				}
+				if set, ok := distMap[d]; !ok {
+					distMap[d] = ids
+				} else {
+					set.Add(ids.Members()...)
+				}
+				minDist = d
 			}
+
+		}
+
+		if minDist < math.MaxInt {
+			nodes.Add(distMap[minDist].Members()...)
+			kinds.Set(k)
 		}
 	}
 
-	if expand.Size() == 0 {
-		return []ID{}, fmt.Errorf("failed to expand nodes %v with %v nodes", from, kinds)
-	}
-
-	return expand.SortedMembers(), nil
+	return nodes.SortedMembers(), kinds
 }
 
 func (a *Allocator) FilterNodeIDs(ids IDSet, filter func(*Node) bool) IDSet {
