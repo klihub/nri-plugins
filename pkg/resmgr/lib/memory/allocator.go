@@ -108,51 +108,58 @@ func (a *Allocator) GetAvailableKinds() KindMask {
 }
 
 // GetClosestNodes returns the closest nodes matching the given kinds.
-func (a *Allocator) GetClosestNodes(nodeID ID, kinds KindMask) ([]ID, error) {
-	node, ok := a.nodes[nodeID]
+func (a *Allocator) GetClosestNodes(from ID, kinds KindMask) ([]ID, error) {
+	node, ok := a.nodes[from]
 	if !ok {
-		return nil, fmt.Errorf("unknown node #%v", nodeID)
+		return nil, fmt.Errorf("unknon node #%v", from)
 	}
 
-	ids := NewIDSet()
+	nodes := NewIDSet()
 	for _, k := range kinds.Slice() {
-		closest := node.byDistance[k]
-		if len(closest) == 0 {
-			return nil, fmt.Errorf("no available %s nodes", k)
+		var (
+			filter = func(o *Node) bool { return o.Kind() == k }
+		)
+		for _, d := range node.distance.sorted[1:] {
+			ids := a.FilterNodeIDs(node.distance.idsets[d], filter)
+			if ids.Size() > 0 {
+				nodes.Add(ids.Members()...)
+				kinds.Clear(k)
+				break
+			}
 		}
-		ids.Add(closest[0]...)
 	}
 
-	return ids.SortedMembers(), nil
+	if !kinds.IsEmpty() {
+		return nil, fmt.Errorf("failed to find closest %s node to #%v", kinds, from)
+	}
+
+	return nodes.SortedMembers(), nil
 }
 
 // GetClosestNodesForCPUs returns the set of matching nodes closest to a requested set.
 func (a *Allocator) GetClosestNodesForCPUs(cpus cpuset.CPUSet, kinds KindMask) ([]ID, error) {
-	if cpus.IsEmpty() || kinds.IsEmpty() {
-		return []ID{}, nil
+	from := NewIDSet()
+	for _, n := range a.nodes {
+		if !n.closeCPUs.Intersection(cpus).IsEmpty() {
+			from.Add(n.id)
+		}
 	}
 
-	ids := NewIDSet()
-	for _, n := range a.nodes {
-		if cpus.Intersection(n.closeCPUs).IsEmpty() {
-			continue
+	var (
+		need   = kinds
+		filter = func(n *Node) bool { need.Clear(n.Kind()); return kinds.Has(n.Kind()) }
+		nodes  = a.FilterNodeIDs(from, filter)
+	)
+
+	if !need.IsEmpty() {
+		n, k := a.Expand(from.Members(), need)
+		if k != need {
+			return nil, fmt.Errorf("failed to find closest %s nodes", need.Clear(k.Slice()...))
 		}
-		if kinds.Has(n.kind) {
-			ids.Add(n.id)
-			closest, err := a.GetClosestNodes(n.id, *(kinds.Clone().Clear(n.kind)))
-			if err != nil {
-				return nil, fmt.Errorf("can't find %s nodes for CPUs %s: %w", kinds, cpus, err)
-			}
-			ids.Add(closest...)
-		} else {
-			closest, err := a.GetClosestNodes(n.id, kinds)
-			if err != nil {
-				return nil, fmt.Errorf("can't find %s nodes for CPUs %s: %w", kinds, cpus, err)
-			}
-			ids.Add(closest...)
-		}
+		nodes.Add(n...)
 	}
-	return ids.SortedMembers(), nil
+
+	return nodes.SortedMembers(), nil
 }
 
 // Distance returns the distance between the given two nodes.
@@ -168,8 +175,8 @@ func (a *Allocator) Distance(id1, id2 ID) int {
 // Expand the given set of nodes with the closest set of allowed kinds.
 func (a *Allocator) Expand(from []ID, allow KindMask) ([]ID, KindMask) {
 	// For each allowed kind, find all nodes with a minimum distance
-	// between any node in the set and any node not in the set yet.
-	// Add all such nodes to the expansion.
+	// between any node in the set and any node not in the set. Add
+	// all such nodes to the expansion.
 
 	nodes := NewIDSet()
 	kinds := KindMask(0)
@@ -222,7 +229,6 @@ func (a *Allocator) prepareNode(node *Node) {
 	idsets := map[int]IDSet{}
 	for _, id := range a.ids {
 		d := node.Distance()[id]
-		log.Info("*** node %v has neighbor %v at distance %v", node.id, id, d)
 		if set, ok := idsets[d]; ok {
 			set.Add(id)
 		} else {
@@ -363,13 +369,13 @@ func (a *Allocator) logNodes() {
 		for idx, d := range n.distance.sorted {
 			set, ok := n.distance.idsets[d]
 			if !ok {
-				log.Error("***** no idsets for distance %v!!!", d)
+				log.Error("internal error: %s node #%v: no nodes at distance %v", n.kind, n.id, d)
 				continue
 			}
-			log.Info("*** %s node #%v: nodes set %v at distance %v", n.kind, n.id, set, d)
+			log.Info("%s node #%v: distance %v: nodes %v", n.kind, n.id, d, set)
 			if idx == 0 {
 				if set.Size() != 1 || set.Members()[0] != id {
-					log.Error("***** %d node #%v is not it's own closest neighbor!!!",
+					log.Error("internal error: %s node #%v is not its own closest neighbor",
 						n.kind, n.id)
 				}
 			}

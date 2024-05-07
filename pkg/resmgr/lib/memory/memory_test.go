@@ -15,7 +15,6 @@
 package libmem_test
 
 import (
-	"github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 
@@ -25,6 +24,75 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestGetClosestNodes(t *testing.T) {
+	type testCase struct {
+		name   string
+		node   ID
+		kinds  []Kind
+		expect []ID
+		fail   bool
+	}
+
+	var (
+		sysRoot = "./testdata/sample2"
+		sys     sysfs.System
+		err     error
+		a       *Allocator
+	)
+
+	sys, err = sysfs.DiscoverSystemAt(sysRoot + "/sys")
+	require.Nil(t, err)
+	require.NotNil(t, sys)
+
+	a, err = NewAllocator(WithSystemNodes(sys))
+	require.Nil(t, err)
+	require.NotNil(t, a)
+
+	for _, tc := range []*testCase{
+		{
+			name:   "closest DRAM nodes to node #0",
+			node:   0,
+			kinds:  []Kind{KindDRAM},
+			expect: []ID{2},
+		},
+		{
+			name:   "closest PMEM nodes to node #0",
+			node:   0,
+			kinds:  []Kind{KindPMEM},
+			expect: []ID{4},
+		},
+		{
+			name:   "closest DRAM+PMEM nodes to node #0",
+			node:   0,
+			kinds:  []Kind{KindDRAM, KindPMEM},
+			expect: []ID{2, 4},
+		},
+		{
+			name:   "closest DRAM nodes to node #1",
+			node:   1,
+			kinds:  []Kind{KindDRAM},
+			expect: []ID{3},
+		},
+		{
+			name:   "closest PMEM nodes to node #1",
+			node:   1,
+			kinds:  []Kind{KindPMEM},
+			expect: []ID{6},
+		},
+		{
+			name:   "closest DRAM+PMEM nodes to node #1",
+			node:   1,
+			kinds:  []Kind{KindDRAM, KindPMEM},
+			expect: []ID{3, 6},
+		},
+	} {
+		nodes, err := a.GetClosestNodes(tc.node, MaskForKinds(tc.kinds...))
+		require.Nil(t, err)
+		require.NotNil(t, nodes)
+		require.Equal(t, tc.expect, nodes)
+	}
+}
 
 func TestGetClosestNodesForCPUs(t *testing.T) {
 	type testCase struct {
@@ -264,6 +332,14 @@ func TestGetAvailableKinds(t *testing.T) {
 }
 
 func TestExpand(t *testing.T) {
+	type testCase struct {
+		name  string
+		start []ID
+		allow []Kind
+		nodes []ID
+		kinds []Kind
+	}
+
 	var (
 		sysRoot = "./testdata/sample2"
 		sys     sysfs.System
@@ -279,42 +355,59 @@ func TestExpand(t *testing.T) {
 	require.Nil(t, err)
 	require.NotNil(t, a)
 
-	ids := a.GetNodeIDs()
-	kinds := a.GetAvailableKinds()
-
-	for _, id := range a.GetNodeIDs() {
-		log.Info("=== %v: %v", id, a.GetNode(id).Distance())
-	}
-
-	for _, id := range ids {
-		for _, k := range kinds.Slice() {
-			set := NewIDSet(id)
-			for {
-				exp, mask := a.Expand(set.SortedMembers(), MaskForKinds(k))
-				if mask != 0 {
-					log.Info("onekind: expanding %v by %v nodes gave %v (%v)", set, k, exp, mask)
-					set.Add(exp...)
-					continue
-				}
-
-				log.Error("onekind: failed to expand %v with %v nodes", set, k)
-				break
-			}
-		}
-	}
-
-	for _, id := range ids {
-		set := NewIDSet(id)
-		for {
-			exp, mask := a.Expand(set.SortedMembers(), kinds)
-			if mask != 0 {
-				log.Info("allkinds: expanding %v by %v nodes gave %v (%v)", set, kinds, exp, mask)
-				set.Add(exp...)
-				continue
-			}
-
-			log.Error("allkinds: failed to expand %v with %v nodes", set, kinds)
-			break
-		}
+	for _, tc := range []*testCase{
+		{
+			name:  "node #0, DRAM expansion #1",
+			start: []ID{0},
+			allow: []Kind{KindDRAM},
+			nodes: []ID{2},
+			kinds: []Kind{KindDRAM},
+		},
+		{
+			name:  "node #0, DRAM expansion #2",
+			start: []ID{0, 2},
+			allow: []Kind{KindDRAM},
+			nodes: []ID{1, 3},
+			kinds: []Kind{KindDRAM},
+		},
+		{
+			name:  "node #0, PMEM expansion #1",
+			start: []ID{0},
+			allow: []Kind{KindPMEM},
+			nodes: []ID{4},
+			kinds: []Kind{KindPMEM},
+		},
+		{
+			name:  "node #0, PMEM expansion #2",
+			start: []ID{0, 4},
+			allow: []Kind{KindPMEM},
+			nodes: []ID{5, 6, 7},
+			kinds: []Kind{KindPMEM},
+		},
+		{
+			name:  "node #0, DRAM+PMEM expansion #1",
+			start: []ID{0},
+			allow: []Kind{KindDRAM, KindPMEM},
+			nodes: []ID{2, 4},
+			kinds: []Kind{KindDRAM, KindPMEM},
+		},
+		{
+			name:  "node #0, DRAM+PMEM expansion #2",
+			start: []ID{0, 2, 4},
+			allow: []Kind{KindDRAM, KindPMEM},
+			nodes: []ID{1, 3, 5},
+			kinds: []Kind{KindDRAM, KindPMEM},
+		},
+		{
+			name:  "node #0, DRAM+PMEM expansion #3",
+			start: []ID{0, 1, 2, 3, 4, 5},
+			allow: []Kind{KindDRAM, KindPMEM},
+			nodes: []ID{6, 7},
+			kinds: []Kind{KindPMEM},
+		},
+	} {
+		nodes, kinds := a.Expand(tc.start, MaskForKinds(tc.allow...))
+		require.Equal(t, tc.nodes, nodes)
+		require.Equal(t, MaskForKinds(tc.kinds...), kinds)
 	}
 }
