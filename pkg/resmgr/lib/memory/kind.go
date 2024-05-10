@@ -102,39 +102,81 @@ func (m KindMask) Clone() *KindMask {
 
 func (m KindMask) Slice() []Kind {
 	var kinds []Kind
-	if m.Has(KindDRAM) {
+	if m.HasKind(KindDRAM) {
 		kinds = append(kinds, KindDRAM)
 	}
-	if m.Has(KindPMEM) {
+	if m.HasKind(KindPMEM) {
 		kinds = append(kinds, KindPMEM)
 	}
-	if m.Has(KindHBM) {
+	if m.HasKind(KindHBM) {
 		kinds = append(kinds, KindHBM)
 	}
 	return kinds
 }
 
-func (m *KindMask) Set(kinds ...Kind) *KindMask {
+func (m *KindMask) SetKinds(kinds ...Kind) *KindMask {
 	for _, k := range kinds {
 		(*m) |= (1 << k)
 	}
 	return m
 }
 
-func (m *KindMask) Clear(kinds ...Kind) *KindMask {
+func (m *KindMask) ClearKinds(kinds ...Kind) *KindMask {
 	for _, k := range kinds {
 		(*m) &^= (1 << k)
 	}
 	return m
 }
 
-func (m KindMask) Has(kinds ...Kind) bool {
+func (m KindMask) HasKinds(kinds ...Kind) bool {
 	for _, k := range kinds {
 		if (m & (1 << k)) == 0 {
 			return false
 		}
 	}
 	return true
+}
+
+func (m *KindMask) SetKind(k Kind) *KindMask {
+	(*m) |= (1 << k)
+	return m
+}
+
+func (m *KindMask) ClearKind(k Kind) *KindMask {
+	(*m) &^= (1 << k)
+	return m
+}
+
+func (m KindMask) HasKind(k Kind) bool {
+	return (m & (1 << k)) != 0
+}
+
+func (m *KindMask) Set(o KindMask) *KindMask {
+	(*m) |= o
+	return m
+}
+
+func (m *KindMask) Clear(o KindMask) *KindMask {
+	(*m) &^= o
+	return m
+}
+
+func (m KindMask) Has(o KindMask) bool {
+	return (m & o) != 0
+}
+
+func (m *KindMask) And(o KindMask) *KindMask {
+	(*m) &= o
+	return m
+}
+
+func (m *KindMask) Or(o KindMask) *KindMask {
+	(*m) |= o
+	return m
+}
+
+func (m KindMask) Not() KindMask {
+	return m ^ KindMask(-1)
 }
 
 func (m KindMask) IsEmpty() bool {
@@ -144,7 +186,7 @@ func (m KindMask) IsEmpty() bool {
 func (m KindMask) String() string {
 	kinds := []string{}
 	for k := KindDRAM; k < KindMax; k++ {
-		if m.Has(k) {
+		if m.HasKind(k) {
 			kinds = append(kinds, k.String())
 		}
 	}

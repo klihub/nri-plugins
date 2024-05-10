@@ -15,6 +15,8 @@
 package libmem_test
 
 import (
+	"strconv"
+
 	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 
@@ -495,6 +497,146 @@ func TestNodeMaskOperations(t *testing.T) {
 		require.Equal(t, tc.rd, rd.IDs(), "incorrect diff")
 		if ri.Size() > 0 {
 			require.True(t, ri.ContainsAny(tc.m1...) || ri.ContainsAny(tc.m2...))
+		}
+	}
+}
+
+func TestAllocate(t *testing.T) {
+	const (
+		normal  = false
+		movable = true
+	)
+
+	type testSetup struct {
+		name        string
+		description string
+		nodes       []*Node
+	}
+
+	var (
+		dist0 = [][]int{
+			{10, 11, 20, 20},
+			{11, 10, 20, 20},
+			{20, 20, 10, 11},
+			{20, 20, 11, 10},
+		}
+		dist1 = [][]int{
+			{10, 21, 11, 21, 17, 28, 28, 28},
+			{21, 10, 21, 11, 28, 28, 17, 28},
+			{11, 21, 10, 21, 28, 17, 28, 28},
+			{21, 11, 21, 10, 28, 28, 28, 17},
+			{17, 28, 28, 28, 10, 28, 28, 28},
+			{28, 28, 17, 28, 28, 10, 28, 28},
+			{28, 17, 28, 28, 28, 28, 10, 28},
+			{28, 28, 28, 17, 28, 28, 28, 10},
+		}
+		cpus0 = []cpuset.CPUSet{
+			cpuset.New(0),
+			cpuset.New(1),
+			cpuset.New(2),
+			cpuset.New(3),
+		}
+		cpus1 = []cpuset.CPUSet{
+			cpuset.New(0, 1),
+			cpuset.New(2, 3),
+			cpuset.New(4, 5),
+			cpuset.New(6, 7),
+			cpuset.New(8, 9),
+			cpuset.New(10, 11),
+			cpuset.New(12, 13),
+			cpuset.New(14, 15),
+		}
+
+		setups = map[string]*testSetup{
+			"setup0": {
+				description: "2 sockets, 2 NUMA nodes, 4 bytes, 1 close CPU",
+				nodes: []*Node{
+					NewNode(0, KindDRAM, 4, normal, dist0[0], cpus0[0]),
+					NewNode(1, KindDRAM, 4, normal, dist0[1], cpus0[1]),
+					NewNode(2, KindDRAM, 4, normal, dist0[2], cpus0[2]),
+					NewNode(3, KindDRAM, 4, normal, dist0[3], cpus0[2]),
+				},
+			},
+			"setup1": {
+				description: "2 sockets, 4 NUMA nodes, 4 bytes, 2 close CPUs",
+				nodes: []*Node{
+					NewNode(0, KindDRAM, 4, normal, dist1[0], cpus1[0]),
+					NewNode(1, KindDRAM, 4, normal, dist1[1], cpus1[1]),
+					NewNode(2, KindDRAM, 4, normal, dist1[2], cpus1[2]),
+					NewNode(3, KindDRAM, 4, normal, dist1[3], cpus1[3]),
+					NewNode(4, KindPMEM, 4, normal, dist1[4], cpus1[4]),
+					NewNode(5, KindPMEM, 4, normal, dist1[5], cpus1[5]),
+					NewNode(6, KindPMEM, 4, normal, dist1[6], cpus1[6]),
+					NewNode(7, KindPMEM, 4, normal, dist1[7], cpus1[7]),
+				},
+			},
+		}
+
+		allocDRAM = []Kind{KindDRAM}
+
+		a     *Allocator
+		err   error
+		wlCnt int
+		wlID  string
+	)
+
+	a, err = NewAllocator(WithNodes(setups["setup0"].nodes))
+	require.Nil(t, err)
+	require.NotNil(t, a)
+
+	type testCase struct {
+		name    string
+		from    []ID
+		amount  int64
+		kinds   []Kind
+		nodes   []ID
+		updates []string
+		failure error
+	}
+
+	for _, tc := range []*testCase{
+		{
+			name:    "fitting first single node allocation",
+			from:    []ID{0},
+			amount:  1,
+			kinds:   allocDRAM,
+			nodes:   []ID{0},
+			updates: nil,
+			failure: nil,
+		},
+		{
+			name:    "fitting single node allocation",
+			from:    []ID{0},
+			amount:  2,
+			kinds:   allocDRAM,
+			nodes:   []ID{0},
+			updates: nil,
+			failure: nil,
+		},
+		{
+			name:    "non-ftting allocation from single node",
+			from:    []ID{0},
+			amount:  2,
+			kinds:   allocDRAM,
+			nodes:   []ID{0, 2},
+			updates: nil,
+			failure: nil,
+		},
+	} {
+		wlID = strconv.Itoa(wlCnt)
+		wlCnt++
+
+		nodes, updates, err := a.Allocate(&Request{
+			Workload: wlID,
+			Amount:   tc.amount,
+			Kinds:    MaskForKinds(tc.kinds...),
+			Nodes:    tc.from,
+		})
+
+		if tc.failure == nil {
+			require.Nil(t, err, tc.name)
+			require.Equal(t, tc.nodes, nodes, tc.name)
+			require.Equal(t, tc.updates, updates, tc.name)
 		}
 	}
 }

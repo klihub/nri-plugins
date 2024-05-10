@@ -22,10 +22,16 @@ import (
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
+var (
+	// ErrInvalidOffer describes an offer which is not valid any more
+	ErrInvalidOffer = fmt.Errorf("offer not valid")
+)
+
 // Allocator tracks memory allocations from a set of NUMA nodes.
 type Allocator struct {
 	nodes       map[ID]*Node
 	ids         []ID
+	assignments *Assignments
 	allocations map[string]*Allocation
 	generation  int64
 }
@@ -54,18 +60,43 @@ func NewAllocator(options ...AllocatorOption) (*Allocator, error) {
 	return a, nil
 }
 
+type Zone struct {
+	nodes     NodeMask // nodes in this zone
+	capacity  int64    // total capacity of nodes
+	usage     int64    // total *local* usage by fully contained workloads
+	workloads map[string]*Allocation
+}
+
+type Assignments struct {
+	zones map[NodeMask]*Zone
+}
+
 // Get an offer for the given request.
 func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
+	o := &Offer{
+		request:  req.Clone(),
+		updates:  map[string]IDSet{},
+		validity: a.generation,
+	}
+	o.request.Kinds.And(a.GetAvailableKinds())
+
 	return nil, nil
 }
 
 // Commit the given offer, turning it into an allocation.
 func (a *Allocator) Commit(o *Offer) ([]ID, []string, error) {
+	if o != nil && o.validity != a.generation {
+		return nil, nil, fmt.Errorf("%w: validity %d, allocator generation %d",
+			ErrInvalidOffer, o.validity, a.generation)
+	}
+
 	return nil, nil, nil
 }
 
 // Allocate the given request.
 func (a *Allocator) Allocate(req *Request) ([]ID, []string, error) {
+	return []ID{0}, nil, nil
+
 	o, err := a.GetOffer(req)
 	if err != nil {
 		return nil, nil, err
@@ -93,7 +124,7 @@ func (a *Allocator) GetNode(id ID) *Node {
 func (a *Allocator) GetAvailableKinds() KindMask {
 	var mask KindMask
 	for _, node := range a.nodes {
-		mask.Set(node.kind)
+		mask.SetKind(node.kind)
 	}
 	return mask
 }
@@ -114,7 +145,7 @@ func (a *Allocator) GetClosestNodes(from ID, kinds KindMask) ([]ID, error) {
 			ids := a.FilterNodeIDs(node.distance.idsets[d], filter)
 			if ids.Size() > 0 {
 				nodes.Add(ids.Members()...)
-				kinds.Clear(k)
+				kinds.ClearKinds(k)
 				break
 			}
 		}
@@ -138,14 +169,14 @@ func (a *Allocator) GetClosestNodesForCPUs(cpus cpuset.CPUSet, kinds KindMask) (
 
 	var (
 		need   = kinds
-		filter = func(n *Node) bool { need.Clear(n.Kind()); return kinds.Has(n.Kind()) }
+		filter = func(n *Node) bool { need.ClearKind(n.Kind()); return kinds.HasKind(n.Kind()) }
 		nodes  = a.FilterNodeIDs(from, filter)
 	)
 
 	if !need.IsEmpty() {
 		n, k := a.Expand(from.Members(), need)
 		if k != need {
-			return nil, fmt.Errorf("failed to find closest %s nodes", need.Clear(k.Slice()...))
+			return nil, fmt.Errorf("failed to find closest %s nodes", need.ClearKinds(k.Slice()...))
 		}
 		nodes.Add(n...)
 	}
@@ -198,7 +229,7 @@ func (a *Allocator) Expand(from []ID, allow KindMask) ([]ID, KindMask) {
 
 		if minDist < math.MaxInt {
 			nodes.Add(distMap[minDist].Members()...)
-			kinds.Set(k)
+			kinds.SetKind(k)
 		}
 	}
 

@@ -15,6 +15,8 @@
 package libmem
 
 import (
+	"slices"
+
 	logger "github.com/containers/nri-plugins/pkg/log"
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
@@ -54,4 +56,13 @@ type Offer struct {
 type Allocation struct {
 	request *Request // allocation request
 	nodes   IDSet    // nodes allocated to fulfill this request
+}
+
+func (r *Request) Clone() *Request {
+	return &Request{
+		Workload: r.Workload,
+		Amount:   r.Amount,
+		Kinds:    r.Kinds,
+		Nodes:    slices.Clone(r.Nodes),
+	}
 }
