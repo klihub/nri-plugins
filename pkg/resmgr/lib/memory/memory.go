@@ -33,7 +33,7 @@ var (
 type Request struct {
 	Workload string   // ID of workload this offer belongs to
 	Amount   int64    // amount of memory requested
-	Kind     KindMask // kind of memory requested
+	Kinds    KindMask // kind of memory requested
 	Nodes    []ID     // nodes to start allocating memory from
 }
 
@@ -46,7 +46,6 @@ type Request struct {
 // be used to compare various allocation alternatives for a workload.
 type Offer struct {
 	request  *Request         // allocation request
-	nodes    IDSet            // allocated nodes
 	updates  map[string]IDSet // updated workloads to fulfill the request
 	validity int64            // validity of this offer (wrt. Allocator.generation)
 }

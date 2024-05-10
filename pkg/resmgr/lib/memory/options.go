@@ -68,7 +68,7 @@ func WithSystemNodes(sys sysfs.System, pickers ...func(sysfs.Node) bool) Allocat
 				}
 			}
 			if !picked {
-				log.Info("ignoring rejected node #%v...", id)
+				log.Debug("ignoring rejected node #%v...", id)
 				continue
 			}
 
@@ -91,33 +91,10 @@ func WithSystemNodes(sys sysfs.System, pickers ...func(sysfs.Node) bool) Allocat
 			a.nodes[id] = n
 			a.ids = append(a.ids, id)
 
-			log.Info("discovered %s node %d, %d memory, close CPUs %s",
+			log.Debug("discovered %s node %d, %d memory, close CPUs %s",
 				n.kind, n.id, n.capacity, n.closeCPUs.String())
 		}
 
-		return nil
-	}
-}
-
-// WithFallbackNodes is an option to manually set up/override fallback nodes for the allocator.
-func WithFallbackNodes(fallback map[ID][][]ID) AllocatorOption {
-	return func(a *Allocator) error {
-		if len(fallback) < len(a.nodes) {
-			return fmt.Errorf("failed to set fallback nodes, expected %d entries, got %d",
-				len(a.nodes), len(fallback))
-		}
-
-		for id, nodeFallback := range fallback {
-			n, ok := a.nodes[id]
-			if !ok {
-				return fmt.Errorf("failed to set fallback nodes, node #%v not found", id)
-			}
-
-			n.fallback = slices.Clone(nodeFallback)
-			for i, fbids := range nodeFallback {
-				n.fallback[i] = slices.Clone(fbids)
-			}
-		}
 		return nil
 	}
 }
