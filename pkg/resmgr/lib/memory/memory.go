@@ -15,8 +15,6 @@
 package libmem
 
 import (
-	"slices"
-
 	logger "github.com/containers/nri-plugins/pkg/log"
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
@@ -24,6 +22,8 @@ import (
 type (
 	ID    = idset.ID
 	IDSet = idset.IDSet
+	Nodes = NodeMask
+	Kinds = KindMask
 )
 
 var (
@@ -36,7 +36,7 @@ type Request struct {
 	Workload string   // ID of workload this offer belongs to
 	Amount   int64    // amount of memory requested
 	Kinds    KindMask // kind of memory requested
-	Nodes    []ID     // nodes to start allocating memory from
+	Nodes    NodeMask // nodes to start allocating memory from
 }
 
 // Offer represents potential allocation of some memory to a workload.
@@ -47,15 +47,15 @@ type Request struct {
 // allocation has taken place since the offer was created. Offers can
 // be used to compare various allocation alternatives for a workload.
 type Offer struct {
-	request  *Request         // allocation request
-	updates  map[string]IDSet // updated workloads to fulfill the request
-	validity int64            // validity of this offer (wrt. Allocator.generation)
+	request  *Request            // allocation request
+	updates  map[string]NodeMask // updated workloads to fulfill the request
+	validity int64               // validity of this offer (wrt. Allocator.generation)
 }
 
 // Allocation represents some memory allocated to a workload.
 type Allocation struct {
 	request *Request // allocation request
-	nodes   IDSet    // nodes allocated to fulfill this request
+	nodes   NodeMask // nodes allocated to fulfill this request
 }
 
 func (r *Request) Clone() *Request {
@@ -63,6 +63,6 @@ func (r *Request) Clone() *Request {
 		Workload: r.Workload,
 		Amount:   r.Amount,
 		Kinds:    r.Kinds,
-		Nodes:    slices.Clone(r.Nodes),
+		Nodes:    r.Nodes,
 	}
 }

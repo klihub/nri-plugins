@@ -75,7 +75,7 @@ type Assignments struct {
 func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 	o := &Offer{
 		request:  req.Clone(),
-		updates:  map[string]IDSet{},
+		updates:  map[string]NodeMask{},
 		validity: a.generation,
 	}
 	o.request.Kinds.And(a.GetAvailableKinds())
@@ -136,7 +136,7 @@ func (a *Allocator) GetClosestNodes(from ID, kinds KindMask) ([]ID, error) {
 		return nil, fmt.Errorf("unknon node #%v", from)
 	}
 
-	nodes := NewIDSet()
+	nodes := NodeMask(0)
 	for _, k := range kinds.Slice() {
 		var (
 			filter = func(o *Node) bool { return o.Kind() == k }
@@ -144,7 +144,7 @@ func (a *Allocator) GetClosestNodes(from ID, kinds KindMask) ([]ID, error) {
 		for _, d := range node.distance.sorted[1:] {
 			ids := a.FilterNodeIDs(node.distance.idsets[d], filter)
 			if ids.Size() > 0 {
-				nodes.Add(ids.Members()...)
+				nodes.Set(ids.Members()...)
 				kinds.ClearKinds(k)
 				break
 			}
@@ -155,26 +155,26 @@ func (a *Allocator) GetClosestNodes(from ID, kinds KindMask) ([]ID, error) {
 		return nil, fmt.Errorf("failed to find closest %s node to #%v", kinds, from)
 	}
 
-	return nodes.SortedMembers(), nil
+	return nodes.IDs(), nil
 }
 
 // GetClosestNodesForCPUs returns the set of matching nodes closest to a requested set.
 func (a *Allocator) GetClosestNodesForCPUs(cpus cpuset.CPUSet, kinds KindMask) ([]ID, error) {
-	from := NewIDSet()
+	from := NodeMask(0)
 	for _, n := range a.nodes {
 		if !n.closeCPUs.Intersection(cpus).IsEmpty() {
-			from.Add(n.id)
+			from.Set(n.id)
 		}
 	}
 
 	var (
 		need   = kinds
 		filter = func(n *Node) bool { need.ClearKind(n.Kind()); return kinds.HasKind(n.Kind()) }
-		nodes  = a.FilterNodeIDs(from, filter)
+		nodes  = a.FilterNodeIDs(from.IDSet(), filter)
 	)
 
 	if !need.IsEmpty() {
-		n, k := a.Expand(from.Members(), need)
+		n, k := a.Expand(from.IDs(), need)
 		if k != need {
 			return nil, fmt.Errorf("failed to find closest %s nodes", need.ClearKinds(k.Slice()...))
 		}
