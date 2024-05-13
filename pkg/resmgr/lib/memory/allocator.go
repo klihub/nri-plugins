@@ -119,10 +119,10 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 	)
 
 	if missingKinds != 0 {
-		n, _ := a.Expand(o.request.Nodes.IDs(), missingKinds)
+		n, _ := a.expand(o.request.Nodes, missingKinds)
 		log.Info("missing kinds in %v: %s", o.request.Nodes, missingKinds)
 		log.Info("expanded nodes %v with %s %v", o.request.Nodes, kinds, nodes)
-		nodes = o.request.Nodes | NodeMaskForIDs(n...)
+		nodes = o.request.Nodes | n
 	} else {
 		nodes = o.request.Nodes
 	}
@@ -131,14 +131,15 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 		c := a.zones.capacity(nodes)
 		u := a.zones.usage(nodes)
 		free = c - u
+		free = a.zones.free(nodes)
 		log.Debug("* zones %s, capacity %d, usage %d => free: %d", nodes, c, u, free)
 		if free < o.request.Amount {
 			log.Info("free memory %d < requested %d, expanding node...", free, o.request.Amount)
-			n, k := a.Expand(nodes.IDs(), o.request.Kinds)
-			if len(n) == 0 {
+			n, k := a.expand(nodes, o.request.Kinds)
+			if n == 0 {
 				break
 			}
-			nodes |= NodeMaskForIDs(n...)
+			nodes |= n
 			log.Info("expanded with new %s nodes %v to %s", k, n, nodes)
 		} else {
 			log.Info("%s has enough free capacity (%d >= %d)", nodes, free, o.request.Amount)
@@ -276,11 +277,17 @@ func (a *Allocator) Distance(id1, id2 ID) int {
 
 // Expand the given set of nodes with the closest set of allowed kinds.
 func (a *Allocator) Expand(from []ID, allow KindMask) ([]ID, KindMask) {
+	n, k := a.expand(NodeMaskForIDs(from...), allow)
+	return n.IDs(), k
+}
+
+// Expand the given set of nodes with the closest set of allowed kinds.
+func (a *Allocator) expand(from NodeMask, allow KindMask) (NodeMask, KindMask) {
 	// For each allowed kind, find all nodes with a minimum distance
 	// between any node in the set and any node not in the set. Add
 	// all such nodes to the expansion.
 
-	log.Debug("=> Expand(%v, %s)", from, allow)
+	log.Debug("=> expand(%s, %s)", from, allow)
 
 	nodes := NodeMask(0)
 	kinds := KindMask(0)
@@ -291,13 +298,13 @@ func (a *Allocator) Expand(from []ID, allow KindMask) ([]ID, KindMask) {
 			minDist = math.MaxInt
 		)
 
-		for _, id := range from {
+		for _, id := range from.IDs() {
 			n := a.nodes[id]
 			for _, d := range n.distance.sorted[1:] {
 				//log.Debug("- considering nodes at distance %d...", d)
 				ids := a.FilterNodeIDs(n.distance.idsets[d], filter)
 				//log.Debug("    nodes %s", ids)
-				ids = ids.Clear(from...)
+				ids = ids &^ from
 				if ids.Size() == 0 || minDist < d {
 					continue
 				}
@@ -313,7 +320,7 @@ func (a *Allocator) Expand(from []ID, allow KindMask) ([]ID, KindMask) {
 		}
 	}
 
-	return nodes.IDs(), kinds
+	return nodes, kinds
 }
 
 func (a *Allocator) FilterNodeIDs(ids NodeMask, filter func(*Node) bool) NodeMask {

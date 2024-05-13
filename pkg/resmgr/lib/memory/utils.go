@@ -64,6 +64,10 @@ func (zones *Zones) usage(nodes NodeMask) int64 {
 	return u
 }
 
+func (zones *Zones) free(nodes NodeMask) int64 {
+	return zones.capacity(nodes) - zones.usage(nodes)
+}
+
 func (zones *Zones) add(nodes NodeMask, request *Request) {
 	z, ok := zones.zones[nodes]
 	if !ok {
