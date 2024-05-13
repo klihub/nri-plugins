@@ -31,9 +31,22 @@ var (
 type Allocator struct {
 	nodes       map[ID]*Node
 	ids         []ID
-	assignments *Assignments
+	zones       *Zones
 	allocations map[string]*Allocation
 	generation  int64
+}
+
+type Zones struct {
+	zones   map[NodeMask]*Zone
+	assign  map[string]NodeMask
+	getNode func(id ID) *Node
+}
+
+type Zone struct {
+	nodes     NodeMask // nodes in this zone
+	capacity  int64    // total capacity of nodes
+	usage     int64    // *local* usage by workloads assigned here
+	workloads map[string]int64
 }
 
 // NewAllocator creates an allocator with the given options.
@@ -41,7 +54,12 @@ func NewAllocator(options ...AllocatorOption) (*Allocator, error) {
 	a := &Allocator{
 		nodes:       make(map[ID]*Node),
 		allocations: make(map[string]*Allocation),
+		zones: &Zones{
+			zones:  map[NodeMask]*Zone{},
+			assign: map[string]NodeMask{},
+		},
 	}
+	a.zones.getNode = a.GetNode
 
 	for _, o := range options {
 		if err := o(a); err != nil {
@@ -60,25 +78,89 @@ func NewAllocator(options ...AllocatorOption) (*Allocator, error) {
 	return a, nil
 }
 
-type Zone struct {
-	nodes     NodeMask // nodes in this zone
-	capacity  int64    // total capacity of nodes
-	usage     int64    // total *local* usage by fully contained workloads
-	workloads map[string]*Allocation
-}
-
-type Assignments struct {
-	zones map[NodeMask]*Zone
-}
-
 // Get an offer for the given request.
 func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
+	//
+	// - adjust allowed node kinds
+	//     - filter out unavailable kinds
+	// - adjust requested node set
+	//     - remove nodes with disallowed kinds
+	//     - determine missing allowed kinds
+	//     - expand nodes with missing kinds
+	//
+	// - find node set to assign workload initially to
+	//     - check if node set has enough remaining capacity
+	//     - expand node set if it has too little capacity, and re-check
+	// - assign workload to initial node set
+	//
+	// - check and adjust assignments if there are overflows
+	//     - from smallest to largest node set overlapping with node set of new assignment
+	//       - check if allocations directly assigned to node set and strict node subsets overflow
+	//
+
+	log.Debug("*** #%s: %s %v nodes, %d bytes", req.Workload, req.Kinds, req.Nodes, req.Amount)
+
 	o := &Offer{
 		request:  req.Clone(),
 		updates:  map[string]NodeMask{},
 		validity: a.generation,
 	}
-	o.request.Kinds.And(a.GetAvailableKinds())
+	o.request.Kinds = a.removeAbsentKinds(o.request.Kinds)
+	missingKinds := o.request.Kinds
+	a.foreachNodeInMask(o.request.Nodes, func(n *Node) bool {
+		missingKinds &^= (1 << n.kind)
+		return true
+	})
+
+	var (
+		nodes NodeMask
+		kinds KindMask
+		free  int64
+	)
+
+	if missingKinds != 0 {
+		n, _ := a.Expand(o.request.Nodes.IDs(), missingKinds)
+		log.Info("missing kinds in %v: %s", o.request.Nodes, missingKinds)
+		log.Info("expanded nodes %v with %s %v", o.request.Nodes, kinds, nodes)
+		nodes = o.request.Nodes | NodeMaskForIDs(n...)
+	} else {
+		nodes = o.request.Nodes
+	}
+
+	for {
+		c := a.zones.capacity(nodes)
+		u := a.zones.usage(nodes)
+		free = c - u
+		log.Debug("* zones %s, capacity %d, usage %d => free: %d", nodes, c, u, free)
+		if free < o.request.Amount {
+			log.Info("free memory %d < requested %d, expanding node...", free, o.request.Amount)
+			n, k := a.Expand(nodes.IDs(), o.request.Kinds)
+			if len(n) == 0 {
+				break
+			}
+			nodes |= NodeMaskForIDs(n...)
+			log.Info("expanded with new %s nodes %v to %s", k, n, nodes)
+		} else {
+			log.Info("%s has enough free capacity (%d >= %d)", nodes, free, o.request.Amount)
+			break
+		}
+	}
+
+	if free < o.request.Amount {
+		log.Errorf("not enough free memory (%d < %d)", free, o.request.Amount)
+		return nil, fmt.Errorf("not enough free memory (%d < %d)", free, o.request.Amount)
+	}
+
+	log.Info("using initial nodes %s", nodes)
+
+	//zones := a.zones.Clone()
+
+	a.zones.add(nodes, o.request)
+
+	_ = a.zones.getUsage(nodes)
+	_ = a.zones.checkOverflow(nodes)
+
+	//a.zones = zones
 
 	return nil, nil
 }
@@ -95,8 +177,6 @@ func (a *Allocator) Commit(o *Offer) ([]ID, []string, error) {
 
 // Allocate the given request.
 func (a *Allocator) Allocate(req *Request) ([]ID, []string, error) {
-	return []ID{0}, nil, nil
-
 	o, err := a.GetOffer(req)
 	if err != nil {
 		return nil, nil, err
@@ -144,7 +224,7 @@ func (a *Allocator) GetClosestNodes(from ID, kinds KindMask) ([]ID, error) {
 		for _, d := range node.distance.sorted[1:] {
 			ids := a.FilterNodeIDs(node.distance.idsets[d], filter)
 			if ids.Size() > 0 {
-				nodes.Set(ids.Members()...)
+				nodes = nodes.Set(ids.IDs()...)
 				kinds.ClearKinds(k)
 				break
 			}
@@ -163,14 +243,14 @@ func (a *Allocator) GetClosestNodesForCPUs(cpus cpuset.CPUSet, kinds KindMask) (
 	from := NodeMask(0)
 	for _, n := range a.nodes {
 		if !n.closeCPUs.Intersection(cpus).IsEmpty() {
-			from.Set(n.id)
+			from = from.Set(n.id)
 		}
 	}
 
 	var (
 		need   = kinds
 		filter = func(n *Node) bool { need.ClearKind(n.Kind()); return kinds.HasKind(n.Kind()) }
-		nodes  = a.FilterNodeIDs(from.IDSet(), filter)
+		nodes  = a.FilterNodeIDs(from, filter)
 	)
 
 	if !need.IsEmpty() {
@@ -178,10 +258,10 @@ func (a *Allocator) GetClosestNodesForCPUs(cpus cpuset.CPUSet, kinds KindMask) (
 		if k != need {
 			return nil, fmt.Errorf("failed to find closest %s nodes", need.ClearKinds(k.Slice()...))
 		}
-		nodes.Add(n...)
+		nodes = nodes.Set(n...)
 	}
 
-	return nodes.SortedMembers(), nil
+	return nodes.IDs(), nil
 }
 
 // Distance returns the distance between the given two nodes.
@@ -200,47 +280,47 @@ func (a *Allocator) Expand(from []ID, allow KindMask) ([]ID, KindMask) {
 	// between any node in the set and any node not in the set. Add
 	// all such nodes to the expansion.
 
-	nodes := NewIDSet()
+	log.Debug("=> Expand(%v, %s)", from, allow)
+
+	nodes := NodeMask(0)
 	kinds := KindMask(0)
 	for _, k := range allow.Slice() {
 		var (
 			filter  = func(o *Node) bool { return o.Kind() == k }
-			distMap = map[int]IDSet{}
+			distMap = map[int]NodeMask{}
 			minDist = math.MaxInt
 		)
 
 		for _, id := range from {
 			n := a.nodes[id]
 			for _, d := range n.distance.sorted[1:] {
+				//log.Debug("- considering nodes at distance %d...", d)
 				ids := a.FilterNodeIDs(n.distance.idsets[d], filter)
-				ids.Del(from...)
+				//log.Debug("    nodes %s", ids)
+				ids = ids.Clear(from...)
 				if ids.Size() == 0 || minDist < d {
 					continue
 				}
-				if set, ok := distMap[d]; !ok {
-					distMap[d] = ids
-				} else {
-					set.Add(ids.Members()...)
-				}
+				distMap[d] |= ids
 				minDist = d
 			}
 
 		}
 
 		if minDist < math.MaxInt {
-			nodes.Add(distMap[minDist].Members()...)
+			nodes = nodes.Set(distMap[minDist].IDs()...)
 			kinds.SetKind(k)
 		}
 	}
 
-	return nodes.SortedMembers(), kinds
+	return nodes.IDs(), kinds
 }
 
-func (a *Allocator) FilterNodeIDs(ids IDSet, filter func(*Node) bool) IDSet {
-	filtered := NewIDSet()
-	for _, id := range ids.Members() {
+func (a *Allocator) FilterNodeIDs(ids NodeMask, filter func(*Node) bool) NodeMask {
+	filtered := NodeMask(0)
+	for _, id := range ids.IDs() {
 		if filter(a.nodes[id]) {
-			filtered.Add(id)
+			filtered = filtered.Set(id)
 		}
 	}
 	return filtered
@@ -248,14 +328,14 @@ func (a *Allocator) FilterNodeIDs(ids IDSet, filter func(*Node) bool) IDSet {
 
 // Prepare a node to be used by an allocator.
 func (a *Allocator) prepareNode(node *Node) {
-	idsets := map[int]IDSet{}
+	log.Debug("=> preparing node #%d...", node.id)
+	idsets := map[int]NodeMask{}
 	for _, id := range a.ids {
 		d := node.distance.vector[id]
-		if set, ok := idsets[d]; ok {
-			set.Add(id)
-		} else {
-			idsets[d] = NewIDSet(id)
-		}
+		log.Debug("  - node #%d at %d distance", id, d)
+		//set := idsets[d]
+		//idsets[d] = *(set.Set(id))
+		idsets[d] |= (1 << id)
 	}
 	node.distance.idsets = idsets
 	for d := range node.distance.idsets {
@@ -276,5 +356,10 @@ func (a *Allocator) logNodes() {
 		for _, d := range n.distance.sorted[1:] {
 			log.Debug("      %d: nodes %s", d, n.distance.idsets[d])
 		}
+	}
+
+	log.Debug("distance matrix:")
+	for _, id := range a.ids {
+		log.Debug("  %d: %v", id, a.nodes[id].distance.vector)
 	}
 }

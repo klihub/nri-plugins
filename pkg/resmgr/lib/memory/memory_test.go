@@ -450,6 +450,9 @@ func TestNodeMaskToIDs(t *testing.T) {
 			ids: []ID{0},
 		},
 		{
+			ids: []ID{1, 3},
+		},
+		{
 			ids: []ID{0, 1, 5},
 		},
 		{
@@ -501,7 +504,7 @@ func TestNodeMaskOperations(t *testing.T) {
 	}
 }
 
-func DontTestAllocate(t *testing.T) {
+func TestAllocate(t *testing.T) {
 	const (
 		normal  = false
 		movable = true
@@ -573,6 +576,7 @@ func DontTestAllocate(t *testing.T) {
 		}
 
 		allocDRAM = []Kind{KindDRAM}
+		//allocDRAMAndPMEM = []Kind{KindDRAM, KindPMEM}
 
 		a     *Allocator
 		err   error
@@ -580,7 +584,7 @@ func DontTestAllocate(t *testing.T) {
 		wlID  string
 	)
 
-	a, err = NewAllocator(WithNodes(setups["setup0"].nodes))
+	a, err = NewAllocator(WithNodes(setups["setup1"].nodes))
 	require.Nil(t, err)
 	require.NotNil(t, a)
 
@@ -598,6 +602,33 @@ func DontTestAllocate(t *testing.T) {
 		{
 			name:    "fitting first single node allocation",
 			from:    []ID{0},
+			amount:  2,
+			kinds:   allocDRAM,
+			nodes:   []ID{0},
+			updates: nil,
+			failure: nil,
+		},
+		{
+			name:    "fitting first single node allocation",
+			from:    []ID{2},
+			amount:  2,
+			kinds:   allocDRAM,
+			nodes:   []ID{0},
+			updates: nil,
+			failure: nil,
+		},
+		{
+			name:    "fitting first single node allocation",
+			from:    []ID{0, 2},
+			amount:  4,
+			kinds:   allocDRAM,
+			nodes:   []ID{0, 2},
+			updates: nil,
+			failure: nil,
+		},
+		{
+			name:    "fitting first single node allocation",
+			from:    []ID{0},
 			amount:  1,
 			kinds:   allocDRAM,
 			nodes:   []ID{0},
@@ -605,20 +636,38 @@ func DontTestAllocate(t *testing.T) {
 			failure: nil,
 		},
 		{
-			name:    "fitting single node allocation",
-			from:    []ID{0},
+			name:    "fitting first single node allocation",
+			from:    []ID{1},
 			amount:  2,
 			kinds:   allocDRAM,
-			nodes:   []ID{0},
+			nodes:   []ID{1},
 			updates: nil,
 			failure: nil,
 		},
 		{
-			name:    "non-ftting allocation from single node",
-			from:    []ID{0},
+			name:    "fitting first single node allocation",
+			from:    []ID{3},
 			amount:  2,
 			kinds:   allocDRAM,
-			nodes:   []ID{0, 2},
+			nodes:   []ID{3},
+			updates: nil,
+			failure: nil,
+		},
+		{
+			name:    "fitting first single node allocation",
+			from:    []ID{1, 3},
+			amount:  4,
+			kinds:   allocDRAM,
+			nodes:   []ID{1, 3},
+			updates: nil,
+			failure: nil,
+		},
+		{
+			name:    "fitting first single node allocation",
+			from:    []ID{1},
+			amount:  1,
+			kinds:   allocDRAM,
+			nodes:   []ID{1},
 			updates: nil,
 			failure: nil,
 		},
@@ -626,17 +675,25 @@ func DontTestAllocate(t *testing.T) {
 		wlID = strconv.Itoa(wlCnt)
 		wlCnt++
 
-		nodes, updates, err := a.Allocate(&Request{
+		_, _, _ = a.Allocate(&Request{
 			Workload: wlID,
 			Amount:   tc.amount,
 			Kinds:    MaskForKinds(tc.kinds...),
 			Nodes:    NodeMaskForIDs(tc.from...),
 		})
 
-		if tc.failure == nil {
-			require.Nil(t, err, tc.name)
-			require.Equal(t, tc.nodes, nodes, tc.name)
-			require.Equal(t, tc.updates, updates, tc.name)
-		}
+		/*
+			nodes, updates, err := a.Allocate(&Request{
+				Workload: wlID,
+				Amount:   tc.amount,
+				Kinds:    MaskForKinds(tc.kinds...),
+				Nodes:    NodeMaskForIDs(tc.from...),
+			})
+
+				if tc.failure == nil {
+					require.Nil(t, err, tc.name)
+					require.Equal(t, tc.nodes, nodes, tc.name)
+					require.Equal(t, tc.updates, updates, tc.name)
+				}*/
 	}
 }

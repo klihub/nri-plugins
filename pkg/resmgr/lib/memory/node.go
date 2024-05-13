@@ -21,9 +21,9 @@ import (
 )
 
 type distance struct {
-	vector []int         // distance vector, distances by node ID
-	sorted []int         // unique distances sorted in ascending order
-	idsets map[int]IDSet // nodes by distance
+	vector []int            // distance vector, distances by node ID
+	sorted []int            // unique distances sorted in ascending order
+	idsets map[int]NodeMask // nodes by distance
 }
 
 // Node represents allocatable memory in a NUMA node.

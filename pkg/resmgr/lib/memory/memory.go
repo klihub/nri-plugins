@@ -22,8 +22,6 @@ import (
 type (
 	ID    = idset.ID
 	IDSet = idset.IDSet
-	Nodes = NodeMask
-	Kinds = KindMask
 )
 
 var (
@@ -47,7 +45,7 @@ type Request struct {
 // allocation has taken place since the offer was created. Offers can
 // be used to compare various allocation alternatives for a workload.
 type Offer struct {
-	request  *Request            // allocation request
+	request  *Request
 	updates  map[string]NodeMask // updated workloads to fulfill the request
 	validity int64               // validity of this offer (wrt. Allocator.generation)
 }

@@ -26,14 +26,18 @@ const (
 	MaxNodeMaskID = 63
 )
 
+func NodeBit(id ID) NodeMask {
+	if id > MaxNodeMaskID {
+		panic(fmt.Sprintf("can't store node ID %d (> max. %d)", id, MaxNodeMaskID))
+	}
+	return 1 << id
+}
+
 // NodeMaskForIDs returns a node mask representing the given IDs.
 func NodeMaskForIDs(ids ...ID) NodeMask {
 	m := NodeMask(0)
 	for _, id := range ids {
-		if id > MaxNodeMaskID {
-			panic(fmt.Sprintf("can't store ID %d, > %d", id, MaxNodeMaskID))
-		}
-		m |= (1 << id)
+		m |= NodeBit(id)
 	}
 	return m
 }
@@ -44,26 +48,18 @@ func NodeMaskForIDSet(ids IDSet) NodeMask {
 }
 
 // Set sets the given IDs in the node mask.
-func (m *NodeMask) Set(ids ...ID) *NodeMask {
+func (m NodeMask) Set(ids ...ID) NodeMask {
 	for _, id := range ids {
-		if id > MaxNodeMaskID {
-			panic(fmt.Sprintf("can't store ID %d, > %d", id, MaxNodeMaskID))
-		}
-		*m |= (1 << id)
+		m |= NodeBit(id)
 	}
-
 	return m
 }
 
 // Clear clears the given IDs in the node mask.
-func (m *NodeMask) Clear(ids ...ID) *NodeMask {
+func (m NodeMask) Clear(ids ...ID) NodeMask {
 	for _, id := range ids {
-		if id > MaxNodeMaskID {
-			panic(fmt.Sprintf("can't store ID %d, > %d", id, MaxNodeMaskID))
-		}
-		*m &^= (1 << id)
+		m &^= NodeBit(id)
 	}
-
 	return m
 }
 
@@ -89,13 +85,13 @@ func (m NodeMask) Diff(o NodeMask) NodeMask {
 
 // Contains tests if the node mask contains the given id.
 func (m NodeMask) Contains(id ID) bool {
-	return (m & (1 << id)) != 0
+	return (m & NodeBit(id)) != 0
 }
 
 // ContainsAll tests if the node mask contains all the given ids.
 func (m NodeMask) ContainsAll(ids ...ID) bool {
 	for _, id := range ids {
-		if (m & (1 << id)) == 0 {
+		if (m & NodeBit(id)) == 0 {
 			return false
 		}
 	}
@@ -105,7 +101,7 @@ func (m NodeMask) ContainsAll(ids ...ID) bool {
 // ContainsAny tests if the node mask contains any of the given ids.
 func (m NodeMask) ContainsAny(ids ...ID) bool {
 	for _, id := range ids {
-		if (m & (1 << id)) != 0 {
+		if (m & NodeBit(id)) != 0 {
 			return true
 		}
 	}
@@ -128,7 +124,7 @@ func (m NodeMask) IDs() []ID {
 
 	for b := 0; m != 0; b, m = b+8, m>>8 {
 		if m&0xff != 0 {
-			if m&0x0f != 0 {
+			if m&0xf != 0 {
 				if m&0x1 != 0 {
 					ids = append(ids, b+0)
 				}
@@ -170,4 +166,16 @@ func (m NodeMask) IDSet() IDSet {
 // String returns an string representation of the node mask.
 func (m NodeMask) String() string {
 	return "nodes<" + m.IDSet().String() + ">"
+}
+
+func (m NodeMask) foreach(getNode func(id ID) *Node, f func(*Node) bool) {
+	for _, id := range m.IDs() {
+		if n := getNode(id); n != nil {
+			if (m & NodeBit(n.id)) != 0 {
+				if !f(n) {
+					return
+				}
+			}
+		}
+	}
 }
