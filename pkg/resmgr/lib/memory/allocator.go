@@ -37,13 +37,16 @@ type Allocator struct {
 }
 
 type Zones struct {
-	zones   map[NodeMask]*Zone
-	assign  map[string]NodeMask
-	getNode func(id ID) *Node
+	zones       map[NodeMask]*Zone
+	assign      map[string]NodeMask
+	getNode     func(ID) *Node
+	getKind     func(NodeMask) KindMask
+	expandNodes func(NodeMask, KindMask) (NodeMask, KindMask)
 }
 
 type Zone struct {
 	nodes     NodeMask // nodes in this zone
+	kinds     KindMask // node kinds in this zone
 	capacity  int64    // total capacity of nodes
 	usage     int64    // *local* usage by workloads assigned here
 	workloads map[string]int64
@@ -60,6 +63,8 @@ func NewAllocator(options ...AllocatorOption) (*Allocator, error) {
 		},
 	}
 	a.zones.getNode = a.GetNode
+	a.zones.getKind = a.getKind
+	a.zones.expandNodes = a.expand
 
 	for _, o := range options {
 		if err := o(a); err != nil {
@@ -158,13 +163,39 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 
 	a.zones.add(nodes, o.request.Workload, o.request.Amount)
 
-	overflow := a.zones.checkOverflow(nodes)
-	for n, a := range overflow {
-		log.Debug("!!! node %s is overflown by %d bytes", n, a)
+	for _, z := range a.zones.zones {
+		log.Debug("  - usage of %s: %d", z.nodes, a.zones.usage(z.nodes))
+	}
+
+	spill, overflow := a.zones.checkOverflow(nodes)
+	for {
+		for _, n := range overflow {
+			log.Debug("!!! node %s is overflown by %d bytes", n, spill[n])
+		}
+
+		if len(overflow) == 0 {
+			break
+		}
+
+		for _, n := range overflow {
+			if err := a.zones.expand(n, spill[n]); err != nil {
+				if a.kindCapacity(a.zones.zones[n].kinds) < a.zones.usage(n) {
+					log.Error("***** out of memory, %s wants %d, only %d available",
+						n, a.zones.usage(n), a.kindCapacity(a.zones.zones[n].kinds))
+					return nil, fmt.Errorf("out of memory")
+				}
+			}
+		}
+
+		spill, overflow = a.zones.checkOverflow(nodes)
 	}
 
 	log.Debug("total capacity: %d", a.zones.capacity(NodeMask(math.MaxUint64)))
 	log.Debug("total usage: %d", a.zones.usage(NodeMask(math.MaxUint64)))
+
+	for _, z := range a.zones.zones {
+		log.Debug("  - post-alloc usage of %s: %d", z.nodes, a.zones.usage(z.nodes))
+	}
 
 	//a.zones = zones
 
@@ -374,4 +405,24 @@ func (a *Allocator) logNodes() {
 	for _, id := range a.ids {
 		log.Debug("  %d: %v", id, a.nodes[id].distance.vector)
 	}
+}
+
+func (a *Allocator) getKind(nodes NodeMask) KindMask {
+	kinds := KindMask(0)
+	for _, id := range nodes.IDs() {
+		if n := a.nodes[id]; n != nil {
+			kinds.SetKind(n.kind)
+		}
+	}
+	return kinds
+}
+
+func (a *Allocator) kindCapacity(kinds KindMask) int64 {
+	var capacity int64
+	for _, n := range a.nodes {
+		if kinds.HasKind(n.kind) {
+			capacity += n.capacity
+		}
+	}
+	return capacity
 }

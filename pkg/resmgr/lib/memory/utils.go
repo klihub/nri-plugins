@@ -17,6 +17,7 @@ package libmem
 import (
 	"fmt"
 	"maps"
+	"slices"
 )
 
 func (a *Allocator) removeAbsentKinds(kinds KindMask) KindMask {
@@ -84,6 +85,10 @@ func (zones *Zones) add(nodes NodeMask, workload string, amount int64) {
 	zones.assign[workload] = z.nodes
 	log.Debug("+ zone %s now uses %d due to direct assignment of #%s (%d)",
 		z.nodes, z.usage, workload, amount)
+
+	for _, z := range zones.zones {
+		log.Debug("  - post-add usage of %s: %d", z.nodes, zones.usage(z.nodes))
+	}
 }
 
 func (zones *Zones) Clone() *Zones {
@@ -98,7 +103,7 @@ func (zones *Zones) Clone() *Zones {
 	return c
 }
 
-func (zones *Zones) checkOverflow(nodes NodeMask) map[NodeMask]int64 {
+func (zones *Zones) checkOverflow(nodes NodeMask) (map[NodeMask]int64, []NodeMask) {
 	var (
 		overflow = map[NodeMask]int64{}
 		masks    = []NodeMask{}
@@ -116,7 +121,9 @@ func (zones *Zones) checkOverflow(nodes NodeMask) map[NodeMask]int64 {
 		//}
 	}
 
-	return overflow
+	slices.SortFunc(masks, func(a, b NodeMask) int { return int(b - a) })
+
+	return overflow, masks
 }
 
 func (zones *Zones) move(to NodeMask, workload string) {
@@ -125,10 +132,51 @@ func (zones *Zones) move(to NodeMask, workload string) {
 		panic(fmt.Sprintf("cannot move workload %s, not assigned anywhere", workload))
 	}
 
+	log.Debug("... moving #%s from %s to %s", workload, from, to)
+
+	for _, z := range zones.zones {
+		log.Debug("  - pre-move usage of %s: %d", z.nodes, zones.usage(z.nodes))
+	}
+
 	z := zones.zones[from]
 	amount := z.workloads[workload]
 	delete(z.workloads, workload)
 	z.usage -= amount
 
 	zones.add(to, workload, amount)
+
+	for _, z := range zones.zones {
+		log.Debug("  - post-move usage of %s: %d", z.nodes, zones.usage(z.nodes))
+	}
+}
+
+func (zones *Zones) expand(from NodeMask, amount int64) error {
+	zf := zones.zones[from]
+	if zf == nil {
+		panic(fmt.Sprintf("cannot expand %s, no such zone", from))
+	}
+
+	workloads := []string{}
+	for wl := range zf.workloads {
+		workloads = append(workloads, wl)
+	}
+
+	kinds := zones.getKind(from)
+	n, _ := zones.expandNodes(from, kinds)
+	if n == 0 {
+		return fmt.Errorf("failed to expand %s with %s nodes", from, kinds)
+	}
+
+	to := from | n
+
+	for _, wl := range workloads {
+		size := zf.workloads[wl]
+		zones.move(to, wl)
+		amount -= size
+		if amount <= 0 {
+			break
+		}
+	}
+
+	return nil
 }
