@@ -15,6 +15,7 @@
 package libmem_test
 
 import (
+	"sort"
 	"strconv"
 
 	"github.com/containers/nri-plugins/pkg/sysfs"
@@ -561,7 +562,7 @@ func TestAllocate(t *testing.T) {
 
 	for _, tc := range []*testCase{
 		{
-			name:    "fitting first single node allocation",
+			name:    "fitting first single node allocation #1",
 			from:    []ID{0},
 			amount:  2,
 			kinds:   allocDRAM,
@@ -569,7 +570,7 @@ func TestAllocate(t *testing.T) {
 			updates: nil,
 		},
 		{
-			name:    "fitting first single node allocation",
+			name:    "fitting first single node allocation #2",
 			from:    []ID{2},
 			amount:  2,
 			kinds:   allocDRAM,
@@ -578,7 +579,7 @@ func TestAllocate(t *testing.T) {
 		},
 
 		{
-			name:    "fitting first single node allocation",
+			name:    "fitting first single node allocation #3",
 			from:    []ID{0, 2},
 			amount:  4,
 			kinds:   allocDRAM,
@@ -587,7 +588,7 @@ func TestAllocate(t *testing.T) {
 		},
 
 		{
-			name:    "fitting first single node allocation",
+			name:    "fitting first single node allocation #4",
 			from:    []ID{0},
 			amount:  1,
 			kinds:   allocDRAM,
@@ -595,7 +596,7 @@ func TestAllocate(t *testing.T) {
 			updates: nil,
 		},
 		{
-			name:    "fitting first single node allocation",
+			name:    "fitting first single node allocation #5",
 			from:    []ID{1},
 			amount:  2,
 			kinds:   allocDRAM,
@@ -603,7 +604,7 @@ func TestAllocate(t *testing.T) {
 			updates: nil,
 		},
 		{
-			name:    "fitting first single node allocation",
+			name:    "fitting first single node allocation #6",
 			from:    []ID{3},
 			amount:  2,
 			kinds:   allocDRAM,
@@ -611,15 +612,16 @@ func TestAllocate(t *testing.T) {
 			updates: nil,
 		},
 		{
-			name:    "fitting first single node allocation",
+			name:    "non-fitting allocation #7",
 			from:    []ID{1, 3},
 			amount:  4,
 			kinds:   allocDRAM,
 			nodes:   []ID{1, 3},
 			updates: nil,
+			fail:    true,
 		},
 		{
-			name:    "fitting first single node allocation",
+			name:    "non-fitting allocation #8",
 			from:    []ID{1},
 			amount:  1,
 			kinds:   allocDRAM,
@@ -660,5 +662,193 @@ func TestAllocate(t *testing.T) {
 					require.Equal(t, tc.nodes, nodes, tc.name)
 					require.Equal(t, tc.updates, updates, tc.name)
 				}*/
+	}
+}
+
+type testHW struct {
+	description string
+	distance    [][]int
+	cpuset      [][]int
+	capacity    []int64
+	kinds       []Kind
+	movable     []bool
+}
+
+func (hw *testHW) Node(id ID) *Node {
+	return NewNode(
+		id,
+		hw.kinds[id],
+		hw.capacity[id],
+		hw.movable[id],
+		hw.distance[id],
+		cpuset.New(hw.cpuset[id]...),
+	)
+}
+
+func (hw *testHW) Nodes() []*Node {
+	var nodes []*Node
+	for id := range hw.capacity {
+		nodes = append(nodes, hw.Node(id))
+	}
+	return nodes
+}
+
+func (hw *testHW) Allocator() (*Allocator, error) {
+	return NewAllocator(WithNodes(hw.Nodes()))
+}
+
+func TestMoreOfAllocate(t *testing.T) {
+	var (
+		testSetup = map[string]testHW{
+			"4DRAM": testHW{
+				description: "4 DRAM NUMA nodes, 1 close CPU per node",
+				distance: [][]int{
+					{10, 20, 11, 20},
+					{20, 10, 20, 11},
+					{11, 20, 10, 20},
+					{20, 11, 20, 10},
+				},
+				cpuset:   [][]int{{0}, {1}, {2}, {3}},
+				capacity: []int64{4, 4, 4, 4},
+				kinds:    []Kind{KindDRAM, KindDRAM, KindDRAM, KindDRAM},
+				movable:  []bool{false, false, false, false},
+			},
+			"4DRAM+4PMEM": testHW{
+				description: "4 DRAM + 4 PMEM NUMA nodes, 2 close CPUs per node",
+				distance: [][]int{
+					{10, 11, 20, 20, 17, 28, 28, 28},
+					{11, 10, 20, 20, 28, 28, 17, 28},
+					{20, 20, 10, 11, 28, 17, 28, 28},
+					{20, 20, 11, 10, 28, 28, 28, 17},
+					{17, 28, 28, 28, 10, 28, 28, 28},
+					{28, 28, 17, 28, 28, 10, 28, 28},
+					{28, 17, 28, 28, 28, 28, 10, 28},
+					{28, 28, 28, 17, 28, 28, 28, 10},
+				},
+				cpuset: [][]int{
+					{0, 2}, {1, 3}, {4, 6}, {5, 7},
+					{8, 10}, {9, 11}, {12, 14}, {13, 15},
+				},
+				capacity: []int64{
+					4, 4, 4, 4,
+					4, 4, 4, 4,
+				},
+				kinds: []Kind{
+					KindDRAM, KindDRAM, KindDRAM, KindDRAM,
+					KindPMEM, KindPMEM, KindPMEM, KindPMEM,
+				},
+				movable: []bool{
+					false, false, false, false,
+					false, false, false, false,
+				},
+			},
+		}
+	)
+
+	type testCase struct {
+		name    string
+		amount  int64
+		kinds   []Kind
+		from    []ID
+		nodes   []ID
+		updates map[string][]ID
+		fail    bool
+		release []string
+	}
+
+	var (
+		allocDRAM  = []Kind{KindDRAM}
+		allocators = map[string]*Allocator{}
+		hwName     string
+		a          *Allocator
+		err        error
+	)
+
+	for n, hw := range testSetup {
+		name := "allocator for test setup " + n
+		allocators[n], err = hw.Allocator()
+		require.Nil(t, err, name)
+		require.NotNil(t, allocators[n], name)
+	}
+
+	hwName = "4DRAM"
+	a = allocators[hwName]
+	for idx, tc := range []*testCase{
+		{
+			name:    "fitting allocation from NUMA node #0",
+			amount:  2,
+			kinds:   allocDRAM,
+			from:    []ID{0},
+			nodes:   []ID{0},
+			updates: nil,
+		},
+		{
+			name:    "fitting allocation from NUMA node #1",
+			amount:  2,
+			kinds:   allocDRAM,
+			from:    []ID{1},
+			nodes:   []ID{1},
+			updates: nil,
+		},
+		{
+			name:    "fitting allocation from NUMA nodes #0,2",
+			amount:  4,
+			kinds:   allocDRAM,
+			from:    []ID{0, 2},
+			nodes:   []ID{0, 2},
+			updates: nil,
+		},
+		{
+			name:    "fitting allocation from NUMA nodes #1,3",
+			amount:  4,
+			kinds:   allocDRAM,
+			from:    []ID{1, 3},
+			nodes:   []ID{1, 3},
+			updates: nil,
+		},
+		{
+			name:    "overflowing allocation from NUMA nodes #0,1,2,3",
+			amount:  3,
+			kinds:   allocDRAM,
+			from:    []ID{0},
+			nodes:   []ID{0, 1, 2, 3},
+			updates: nil,
+		},
+		{
+			name:    "overflowing allocation from NUMA nodes #0,1,2,3",
+			amount:  1,
+			kinds:   allocDRAM,
+			from:    []ID{1},
+			nodes:   []ID{1},
+			updates: nil,
+		},
+	} {
+		testName := hwName + "/" + tc.name
+
+		nodes, updates, err := a.Allocate(&Request{
+			Workload: strconv.Itoa(idx),
+			Amount:   tc.amount,
+			Kinds:    MaskForKinds(tc.kinds...),
+			Nodes:    NodeMaskForIDs(tc.from...),
+		})
+
+		if tc.fail {
+			require.NotNil(t, err, testName)
+			require.Nil(t, nodes, testName)
+			require.Nil(t, updates, testName)
+		} else {
+			t.Logf("allocated nodes %v, updated workloads %v", nodes, updates)
+			require.Nil(t, err, testName)
+			require.NotNil(t, nodes, testName)
+			if tc.updates != nil {
+				workloads := []string{}
+				for wl := range tc.updates {
+					workloads = append(workloads, wl)
+				}
+				sort.Strings(updates)
+				sort.Strings(workloads)
+				require.Equal(t, workloads, updates, testName)
+			}
+		}
 	}
 }

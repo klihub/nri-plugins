@@ -56,9 +56,16 @@ func (zones *Zones) usage(nodes NodeMask) int64 {
 		u = z.usage
 	}
 
+	if nodes == NodeMaskForIDs(1) {
+		log.Debug("- zone %s, direct usage %d...", nodes, u)
+	}
+
 	for m, z := range zones.zones {
 		if (m&nodes) == m && m != nodes {
 			u += z.usage
+			if nodes == NodeMaskForIDs(1) {
+				log.Debug("+ zone %s + sub-zone %s direct usage %d = %d...", nodes, m, z.usage, u)
+			}
 		}
 	}
 	return u
@@ -69,6 +76,7 @@ func (zones *Zones) free(nodes NodeMask) int64 {
 }
 
 func (zones *Zones) add(nodes NodeMask, workload string, amount int64) {
+	log.Debug("...add #%s (%d) to %s", workload, amount, nodes)
 	z, ok := zones.zones[nodes]
 	if !ok {
 		z = &Zone{
@@ -88,10 +96,6 @@ func (zones *Zones) add(nodes NodeMask, workload string, amount int64) {
 
 	if zones.changes != nil {
 		zones.changes[workload] = nodes
-	}
-
-	for _, z := range zones.zones {
-		log.Debug("  - post-add usage of %s: %d", z.nodes, zones.usage(z.nodes))
 	}
 }
 
@@ -115,16 +119,26 @@ func (zones *Zones) remove(workload string) error {
 
 func (zones *Zones) Clone() *Zones {
 	c := &Zones{
-		zones:       maps.Clone(zones.zones),
+		zones:       map[NodeMask]*Zone{},
 		assign:      maps.Clone(zones.assign),
 		getNode:     zones.getNode,
 		getKind:     zones.getKind,
 		expandNodes: zones.expandNodes,
 	}
-	for _, z := range c.zones {
-		z.workloads = maps.Clone(z.workloads)
+	for m, z := range zones.zones {
+		c.zones[m] = z.Clone()
 	}
 	return c
+}
+
+func (z *Zone) Clone() *Zone {
+	return &Zone{
+		nodes:     z.nodes,
+		kinds:     z.kinds,
+		capacity:  z.capacity,
+		usage:     z.usage,
+		workloads: maps.Clone(z.workloads),
+	}
 }
 
 func (zones *Zones) checkOverflow(nodes NodeMask) (map[NodeMask]int64, []NodeMask) {
@@ -156,22 +170,16 @@ func (zones *Zones) move(to NodeMask, workload string) {
 		panic(fmt.Sprintf("cannot move workload %s, not assigned anywhere", workload))
 	}
 
-	log.Debug("... moving #%s from %s to %s", workload, from, to)
-
-	for _, z := range zones.zones {
-		log.Debug("  - pre-move usage of %s: %d", z.nodes, zones.usage(z.nodes))
-	}
-
 	z := zones.zones[from]
 	amount := z.workloads[workload]
+
+	log.Debug("...move #%s (%d) from %s to %s", workload, amount, from, to)
+
 	delete(z.workloads, workload)
 	z.usage -= amount
 
 	zones.add(to, workload, amount)
 
-	for _, z := range zones.zones {
-		log.Debug("  - post-move usage of %s: %d", z.nodes, zones.usage(z.nodes))
-	}
 }
 
 func (zones *Zones) expand(from NodeMask, amount int64) error {
@@ -203,4 +211,14 @@ func (zones *Zones) expand(from NodeMask, amount int64) error {
 	}
 
 	return nil
+}
+
+func (zones *Zones) dumpUsage(prefix string) {
+	if prefix != "" {
+		prefix += " "
+	}
+	for _, z := range zones.zones {
+		log.Debug("%susage of %s: %d of %d", prefix, z.nodes,
+			zones.usage(z.nodes), zones.capacity(z.nodes))
+	}
 }

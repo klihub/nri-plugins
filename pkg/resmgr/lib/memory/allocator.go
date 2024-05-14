@@ -104,7 +104,7 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 	//       - check if allocations directly assigned to node set and strict node subsets overflow
 	//
 
-	log.Debug("*** #%s: %s %v nodes, %d bytes", req.Workload, req.Kinds, req.Nodes, req.Amount)
+	log.Debug("=> #%s: %s %v nodes, %d bytes", req.Workload, req.Kinds, req.Nodes, req.Amount)
 
 	o := &Offer{
 		request:  req.Clone(),
@@ -160,18 +160,21 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 
 	log.Debug("using initial nodes %s", nodes)
 
-	zones := a.zones.Clone()
+	savedZones := a.zones.Clone()
 	a.zones.changes = map[string]NodeMask{}
+
+	savedZones.dumpUsage("  - saved")
+
 	defer func() {
-		a.zones = zones
+		savedZones.dumpUsage("  - restoring")
+		a.zones = savedZones
 		a.zones.changes = nil
+		a.zones.dumpUsage("  - post-restored")
 	}()
 
 	a.zones.add(nodes, o.request.Workload, o.request.Amount)
 
-	for _, z := range a.zones.zones {
-		log.Debug("  - usage of %s: %d", z.nodes, a.zones.usage(z.nodes))
-	}
+	a.zones.dumpUsage("  - alloc pre-adjustment")
 
 	spill, overflow := a.zones.checkOverflow(nodes)
 	for {
@@ -196,14 +199,14 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 		spill, overflow = a.zones.checkOverflow(nodes)
 	}
 
-	log.Debug("total capacity: %d", a.zones.capacity(NodeMask(math.MaxUint64)))
-	log.Debug("total usage: %d", a.zones.usage(NodeMask(math.MaxUint64)))
+	//log.Debug("total capacity: %d", a.zones.capacity(NodeMask(math.MaxUint64)))
+	//log.Debug("total usage: %d", a.zones.usage(NodeMask(math.MaxUint64)))
 
-	for _, z := range a.zones.zones {
-		log.Debug("  - post-alloc usage of %s: %d", z.nodes, a.zones.usage(z.nodes))
-	}
+	a.zones.dumpUsage("  - post-alloc")
 
 	o.updates = a.zones.changes
+
+	log.Debug("<= #%s: nodes %s", o.request.Workload, o.updates[o.request.Workload])
 
 	return o, nil
 }
@@ -220,8 +223,11 @@ func (a *Allocator) Commit(o *Offer) ([]ID, []string, error) {
 		updated []string
 	)
 
+	a.zones.dumpUsage("  - pre-commit")
+
 	for wl, n := range o.updates {
 		if wl == o.request.Workload {
+			log.Debug("- commit: adding new workload #%s (%d) to %s", wl, o.request.Amount, n)
 			a.zones.add(n, wl, o.request.Amount)
 			o.request.Nodes = n
 			nodes = n
@@ -230,11 +236,14 @@ func (a *Allocator) Commit(o *Offer) ([]ID, []string, error) {
 				nodes:   n,
 			}
 		} else {
+			log.Debug("- commit: moving existing workload #%s to %s", wl, n)
 			a.zones.move(n, wl)
 			a.allocations[wl].nodes = n
 			updated = append(updated, wl)
 		}
 	}
+
+	a.zones.dumpUsage("  - commit pre overflow check")
 
 	spill, overflow := a.zones.checkOverflow(NodeMask(math.MaxUint64))
 	if len(overflow) != 0 {
