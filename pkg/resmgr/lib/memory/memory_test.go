@@ -595,7 +595,7 @@ func TestAllocate(t *testing.T) {
 		kinds   []Kind
 		nodes   []ID
 		updates []string
-		failure error
+		fail    bool
 	}
 
 	for _, tc := range []*testCase{
@@ -606,7 +606,6 @@ func TestAllocate(t *testing.T) {
 			kinds:   allocDRAM,
 			nodes:   []ID{0},
 			updates: nil,
-			failure: nil,
 		},
 		{
 			name:    "fitting first single node allocation",
@@ -615,7 +614,6 @@ func TestAllocate(t *testing.T) {
 			kinds:   allocDRAM,
 			nodes:   []ID{0},
 			updates: nil,
-			failure: nil,
 		},
 
 		{
@@ -625,7 +623,6 @@ func TestAllocate(t *testing.T) {
 			kinds:   allocDRAM,
 			nodes:   []ID{0, 2},
 			updates: nil,
-			failure: nil,
 		},
 
 		{
@@ -635,7 +632,6 @@ func TestAllocate(t *testing.T) {
 			kinds:   allocDRAM,
 			nodes:   []ID{0},
 			updates: nil,
-			failure: nil,
 		},
 		{
 			name:    "fitting first single node allocation",
@@ -644,7 +640,6 @@ func TestAllocate(t *testing.T) {
 			kinds:   allocDRAM,
 			nodes:   []ID{1},
 			updates: nil,
-			failure: nil,
 		},
 		{
 			name:    "fitting first single node allocation",
@@ -653,7 +648,6 @@ func TestAllocate(t *testing.T) {
 			kinds:   allocDRAM,
 			nodes:   []ID{3},
 			updates: nil,
-			failure: nil,
 		},
 		{
 			name:    "fitting first single node allocation",
@@ -662,7 +656,6 @@ func TestAllocate(t *testing.T) {
 			kinds:   allocDRAM,
 			nodes:   []ID{1, 3},
 			updates: nil,
-			failure: nil,
 		},
 		{
 			name:    "fitting first single node allocation",
@@ -671,18 +664,27 @@ func TestAllocate(t *testing.T) {
 			kinds:   allocDRAM,
 			nodes:   []ID{1},
 			updates: nil,
-			failure: nil,
 		},
 	} {
 		wlID = strconv.Itoa(wlCnt)
 		wlCnt++
 
-		_, _, _ = a.Allocate(&Request{
+		nodes, updates, err := a.Allocate(&Request{
 			Workload: wlID,
 			Amount:   tc.amount,
 			Kinds:    MaskForKinds(tc.kinds...),
 			Nodes:    NodeMaskForIDs(tc.from...),
 		})
+
+		if tc.fail {
+			require.NotNil(t, err, tc.name)
+			require.Nil(t, nodes, tc.name)
+			require.Nil(t, updates, tc.name)
+		} else {
+			t.Logf("=> allocated nodes %v, updated workloads %v", nodes, updates)
+			require.Nil(t, err, tc.name)
+			require.NotNil(t, nodes, tc.name)
+		}
 
 		/*
 			nodes, updates, err := a.Allocate(&Request{

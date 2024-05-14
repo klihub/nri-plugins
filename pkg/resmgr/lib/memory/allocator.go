@@ -39,6 +39,7 @@ type Allocator struct {
 type Zones struct {
 	zones       map[NodeMask]*Zone
 	assign      map[string]NodeMask
+	changes     map[string]NodeMask
 	getNode     func(ID) *Node
 	getKind     func(NodeMask) KindMask
 	expandNodes func(NodeMask, KindMask) (NodeMask, KindMask)
@@ -125,8 +126,8 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 
 	if missingKinds != 0 {
 		n, _ := a.expand(o.request.Nodes, missingKinds)
-		log.Info("missing kinds in %v: %s", o.request.Nodes, missingKinds)
-		log.Info("expanded nodes %v with %s %v", o.request.Nodes, kinds, nodes)
+		log.Debug("missing kinds in %v: %s", o.request.Nodes, missingKinds)
+		log.Debug("expanded nodes %v with %s %v", o.request.Nodes, kinds, nodes)
 		nodes = o.request.Nodes | n
 	} else {
 		nodes = o.request.Nodes
@@ -139,15 +140,15 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 		free = a.zones.free(nodes)
 		log.Debug("* zones %s, capacity %d, usage %d => free: %d", nodes, c, u, free)
 		if free < o.request.Amount {
-			log.Info("free memory %d < requested %d, expanding node...", free, o.request.Amount)
+			log.Debug("free memory %d < requested %d, expanding node...", free, o.request.Amount)
 			n, k := a.expand(nodes, o.request.Kinds)
 			if n == 0 {
 				break
 			}
 			nodes |= n
-			log.Info("expanded with new %s nodes %v to %s", k, n, nodes)
+			log.Debug("expanded with new %s nodes %v to %s", k, n, nodes)
 		} else {
-			log.Info("%s has enough free capacity (%d >= %d)", nodes, free, o.request.Amount)
+			log.Debug("%s has enough free capacity (%d >= %d)", nodes, free, o.request.Amount)
 			break
 		}
 	}
@@ -157,9 +158,14 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 		return nil, fmt.Errorf("not enough free memory (%d < %d)", free, o.request.Amount)
 	}
 
-	log.Info("using initial nodes %s", nodes)
+	log.Debug("using initial nodes %s", nodes)
 
-	//zones := a.zones.Clone()
+	zones := a.zones.Clone()
+	a.zones.changes = map[string]NodeMask{}
+	defer func() {
+		a.zones = zones
+		a.zones.changes = nil
+	}()
 
 	a.zones.add(nodes, o.request.Workload, o.request.Amount)
 
@@ -197,9 +203,9 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 		log.Debug("  - post-alloc usage of %s: %d", z.nodes, a.zones.usage(z.nodes))
 	}
 
-	//a.zones = zones
+	o.updates = a.zones.changes
 
-	return nil, nil
+	return o, nil
 }
 
 // Commit the given offer, turning it into an allocation.
@@ -209,7 +215,40 @@ func (a *Allocator) Commit(o *Offer) ([]ID, []string, error) {
 			ErrInvalidOffer, o.validity, a.generation)
 	}
 
-	return nil, nil, nil
+	var (
+		nodes   NodeMask
+		updated []string
+	)
+
+	for wl, n := range o.updates {
+		if wl == o.request.Workload {
+			a.zones.add(n, wl, o.request.Amount)
+			o.request.Nodes = n
+			nodes = n
+			a.allocations[wl] = &Allocation{
+				request: o.request,
+				nodes:   n,
+			}
+		} else {
+			a.zones.move(n, wl)
+			a.allocations[wl].nodes = n
+			updated = append(updated, wl)
+		}
+	}
+
+	spill, overflow := a.zones.checkOverflow(NodeMask(math.MaxUint64))
+	if len(overflow) != 0 {
+		for _, n := range overflow {
+			log.Error("committing workload for #%s overflow %s by %d bytes",
+				o.request.Workload, n, spill[n])
+		}
+		panic(fmt.Sprintf("committing workload %s resulted in overflow of %d zones",
+			o.request.Workload, len(overflow)))
+	}
+
+	a.generation++
+
+	return nodes.IDs(), updated, nil
 }
 
 // Allocate the given request.
@@ -224,6 +263,16 @@ func (a *Allocator) Allocate(req *Request) ([]ID, []string, error) {
 
 // Release the allocation of the given workload.
 func (a *Allocator) Release(workload string) error {
+	if _, ok := a.allocations[workload]; !ok {
+		return fmt.Errorf("failed to release workload %s, no allocation found", workload)
+	}
+
+	delete(a.allocations, workload)
+
+	if err := a.zones.remove(workload); err != nil {
+		return err
+	}
+
 	return nil
 }
 

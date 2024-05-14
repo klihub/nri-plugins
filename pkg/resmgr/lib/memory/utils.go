@@ -86,16 +86,40 @@ func (zones *Zones) add(nodes NodeMask, workload string, amount int64) {
 	log.Debug("+ zone %s now uses %d due to direct assignment of #%s (%d)",
 		z.nodes, z.usage, workload, amount)
 
+	if zones.changes != nil {
+		zones.changes[workload] = nodes
+	}
+
 	for _, z := range zones.zones {
 		log.Debug("  - post-add usage of %s: %d", z.nodes, zones.usage(z.nodes))
 	}
 }
 
+func (zones *Zones) remove(workload string) error {
+	nodes, ok := zones.assign[workload]
+	if !ok {
+		return fmt.Errorf("can't remove workload %s, no assignment found", workload)
+	}
+	z, ok := zones.zones[nodes]
+	if !ok {
+		log.Warn("can't remove workload %s from %s, not found in zone", workload, nodes)
+		return nil
+	}
+
+	size := z.workloads[workload]
+	delete(z.workloads, workload)
+	z.usage -= size
+
+	return nil
+}
+
 func (zones *Zones) Clone() *Zones {
 	c := &Zones{
-		zones:   maps.Clone(zones.zones),
-		assign:  maps.Clone(zones.assign),
-		getNode: zones.getNode,
+		zones:       maps.Clone(zones.zones),
+		assign:      maps.Clone(zones.assign),
+		getNode:     zones.getNode,
+		getKind:     zones.getKind,
+		expandNodes: zones.expandNodes,
 	}
 	for _, z := range c.zones {
 		z.workloads = maps.Clone(z.workloads)
@@ -110,7 +134,7 @@ func (zones *Zones) checkOverflow(nodes NodeMask) (map[NodeMask]int64, []NodeMas
 	)
 
 	for n := range zones.zones {
-		//if (n & nodes) != 0 {  // for now, check unaffected nodes, too
+		//if (n & nodes) != 0 { // for now, check unaffected nodes, too
 		c := zones.capacity(n)
 		u := zones.usage(n)
 		f := c - u
