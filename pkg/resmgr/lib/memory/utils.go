@@ -17,7 +17,6 @@ package libmem
 import (
 	"fmt"
 	"maps"
-	"slices"
 )
 
 func (a *Allocator) removeAbsentKinds(kinds KindMask) KindMask {
@@ -68,7 +67,7 @@ func (zones *Zones) free(nodes NodeMask) int64 {
 	return zones.capacity(nodes) - zones.usage(nodes)
 }
 
-func (zones *Zones) add(nodes NodeMask, request *Request) {
+func (zones *Zones) add(nodes NodeMask, workload string, amount int64) {
 	z, ok := zones.zones[nodes]
 	if !ok {
 		z = &Zone{
@@ -80,11 +79,11 @@ func (zones *Zones) add(nodes NodeMask, request *Request) {
 		zones.zones[nodes] = z
 	}
 
-	z.workloads[request.Workload] = request.Amount
-	z.usage += request.Amount
-	zones.assign[request.Workload] = z.nodes
+	z.workloads[workload] = amount
+	z.usage += amount
+	zones.assign[workload] = z.nodes
 	log.Debug("+ zone %s now uses %d due to direct assignment of #%s (%d)",
-		z.nodes, z.usage, request.Workload, request.Amount)
+		z.nodes, z.usage, workload, amount)
 }
 
 func (zones *Zones) Clone() *Zones {
@@ -99,26 +98,6 @@ func (zones *Zones) Clone() *Zones {
 	return c
 }
 
-func (zones *Zones) getUsage(nodes NodeMask) map[NodeMask]int64 {
-	var (
-		usage = map[NodeMask]int64{}
-		masks []NodeMask
-	)
-
-	for n := range zones.zones {
-		usage[n] = zones.usage(n)
-		masks = append(masks, n)
-	}
-
-	slices.SortFunc(masks, func(a, b NodeMask) int { return int(a - b) })
-
-	for _, n := range masks {
-		log.Debug("  * zone %s now uses %d", n, usage[n])
-	}
-
-	return usage
-}
-
 func (zones *Zones) checkOverflow(nodes NodeMask) map[NodeMask]int64 {
 	var (
 		overflow = map[NodeMask]int64{}
@@ -126,7 +105,7 @@ func (zones *Zones) checkOverflow(nodes NodeMask) map[NodeMask]int64 {
 	)
 
 	for n := range zones.zones {
-		//if (n & nodes) != 0 {
+		//if (n & nodes) != 0 {  // for now, check unaffected nodes, too
 		c := zones.capacity(n)
 		u := zones.usage(n)
 		f := c - u
@@ -137,11 +116,19 @@ func (zones *Zones) checkOverflow(nodes NodeMask) map[NodeMask]int64 {
 		//}
 	}
 
-	slices.SortFunc(masks, func(a, b NodeMask) int { return int(a - b) })
+	return overflow
+}
 
-	for _, m := range masks {
-		log.Debug("  !!!!! node %s overflown by %d bytes", m, overflow[m])
+func (zones *Zones) move(to NodeMask, workload string) {
+	from := zones.assign[workload]
+	if from == 0 {
+		panic(fmt.Sprintf("cannot move workload %s, not assigned anywhere", workload))
 	}
 
-	return overflow
+	z := zones.zones[from]
+	amount := z.workloads[workload]
+	delete(z.workloads, workload)
+	z.usage -= amount
+
+	zones.add(to, workload, amount)
 }

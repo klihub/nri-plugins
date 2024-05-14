@@ -617,6 +617,7 @@ func TestAllocate(t *testing.T) {
 			updates: nil,
 			failure: nil,
 		},
+
 		{
 			name:    "fitting first single node allocation",
 			from:    []ID{0, 2},
@@ -626,6 +627,7 @@ func TestAllocate(t *testing.T) {
 			updates: nil,
 			failure: nil,
 		},
+
 		{
 			name:    "fitting first single node allocation",
 			from:    []ID{0},

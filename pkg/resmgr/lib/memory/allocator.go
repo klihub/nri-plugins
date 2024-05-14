@@ -156,10 +156,15 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 
 	//zones := a.zones.Clone()
 
-	a.zones.add(nodes, o.request)
+	a.zones.add(nodes, o.request.Workload, o.request.Amount)
 
-	_ = a.zones.getUsage(nodes)
-	_ = a.zones.checkOverflow(nodes)
+	overflow := a.zones.checkOverflow(nodes)
+	for n, a := range overflow {
+		log.Debug("!!! node %s is overflown by %d bytes", n, a)
+	}
+
+	log.Debug("total capacity: %d", a.zones.capacity(NodeMask(math.MaxUint64)))
+	log.Debug("total usage: %d", a.zones.usage(NodeMask(math.MaxUint64)))
 
 	//a.zones = zones
 
