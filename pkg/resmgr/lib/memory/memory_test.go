@@ -437,7 +437,6 @@ func TestNodeMaskCreate(t *testing.T) {
 		require.Equal(t, tc.mask, m)
 		m = NodeMaskForIDSet(NewIDSet(tc.ids...))
 		require.Equal(t, tc.mask, m)
-		require.True(t, m.ContainsAll(tc.ids...))
 	}
 }
 
@@ -463,44 +462,6 @@ func TestNodeMaskToIDs(t *testing.T) {
 		require.Equal(t, tc.ids, m.IDs())
 		m = NodeMaskForIDSet(NewIDSet(tc.ids...))
 		require.Equal(t, tc.ids, m.IDs())
-	}
-}
-
-func TestNodeMaskOperations(t *testing.T) {
-	type testForIDs struct {
-		m1 []ID
-		m2 []ID
-		ru []ID
-		ri []ID
-		rd []ID
-	}
-	for _, tc := range []*testForIDs{
-		{
-			m1: []ID{0, 2, 4, 6},
-			m2: []ID{1, 3, 5, 7},
-			ru: []ID{0, 1, 2, 3, 4, 5, 6, 7},
-			ri: nil,
-			rd: []ID{0, 2, 4, 6},
-		},
-		{
-			m1: []ID{0, 1, 2, 8, 10, 12},
-			m2: []ID{0, 3, 8, 10, 14},
-			ru: []ID{0, 1, 2, 3, 8, 10, 12, 14},
-			ri: []ID{0, 8, 10},
-			rd: []ID{1, 2, 12},
-		},
-	} {
-		m1 := NodeMaskForIDs(tc.m1...)
-		m2 := NodeMaskForIDs(tc.m2...)
-		ru := m1.Union(m2)
-		require.Equal(t, tc.ru, ru.IDs(), "incorrect union")
-		ri := m1.Intersection(m2)
-		require.Equal(t, tc.ri, ri.IDs(), "incorrect intersection")
-		rd := m1.Diff(m2)
-		require.Equal(t, tc.rd, rd.IDs(), "incorrect diff")
-		if ri.Size() > 0 {
-			require.True(t, ri.ContainsAny(tc.m1...) || ri.ContainsAny(tc.m2...))
-		}
 	}
 }
 

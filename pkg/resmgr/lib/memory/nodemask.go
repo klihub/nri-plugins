@@ -55,67 +55,9 @@ func (m NodeMask) Set(ids ...ID) NodeMask {
 	return m
 }
 
-// Clear clears the given IDs in the node mask.
-func (m NodeMask) Clear(ids ...ID) NodeMask {
-	for _, id := range ids {
-		m &^= NodeBit(id)
-	}
-	return m
-}
-
 // Size returns the number of IDs set in the node mask.
 func (m NodeMask) Size() int {
 	return bits.OnesCount64(uint64(m))
-}
-
-// Union returns (m U o), the union of two node masks.
-func (m NodeMask) Union(o NodeMask) NodeMask {
-	return m | o
-}
-
-// Intersection returns (m /\ o), the intersection of two node masks.
-func (m NodeMask) Intersection(o NodeMask) NodeMask {
-	return m & o
-}
-
-// Diff returns (m \ o), mask of nodes present in m but not in o.
-func (m NodeMask) Diff(o NodeMask) NodeMask {
-	return m &^ o
-}
-
-// Contains tests if the node mask contains the given id.
-func (m NodeMask) Contains(id ID) bool {
-	return (m & NodeBit(id)) != 0
-}
-
-// ContainsAll tests if the node mask contains all the given ids.
-func (m NodeMask) ContainsAll(ids ...ID) bool {
-	for _, id := range ids {
-		if (m & NodeBit(id)) == 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// ContainsAny tests if the node mask contains any of the given ids.
-func (m NodeMask) ContainsAny(ids ...ID) bool {
-	for _, id := range ids {
-		if (m & NodeBit(id)) != 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// IsDisjoint tests if two node masks represent disjoint sets of nodes.
-func (m NodeMask) IsDisjoint(o NodeMask) bool {
-	return (m & o) == 0
-}
-
-// IsEqual checks if two node masks represent the same set of nodes.
-func (m NodeMask) IsEqual(o NodeMask) bool {
-	return m == o
 }
 
 // IDs returns the IDs present in the node mask.
@@ -165,7 +107,7 @@ func (m NodeMask) IDSet() IDSet {
 
 // String returns an string representation of the node mask.
 func (m NodeMask) String() string {
-	return "nodes<" + m.IDSet().String() + ">"
+	return "nodes{" + m.IDSet().String() + "}"
 }
 
 func (m NodeMask) foreach(getNode func(id ID) *Node, f func(*Node) bool) {
