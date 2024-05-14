@@ -309,8 +309,8 @@ func (a *Allocator) GetClosestNodes(from ID, kinds KindMask) ([]ID, error) {
 		)
 		for _, d := range node.distance.sorted[1:] {
 			ids := a.FilterNodeIDs(node.distance.idsets[d], filter)
-			if ids.Size() > 0 {
-				nodes = nodes.Set(ids.IDs()...)
+			if ids != 0 {
+				nodes |= ids
 				kinds.ClearKinds(k)
 				break
 			}
@@ -340,11 +340,11 @@ func (a *Allocator) GetClosestNodesForCPUs(cpus cpuset.CPUSet, kinds KindMask) (
 	)
 
 	if !need.IsEmpty() {
-		n, k := a.Expand(from.IDs(), need)
+		n, k := a.expand(from, need)
 		if k != need {
 			return nil, fmt.Errorf("failed to find closest %s nodes", need.ClearKinds(k.Slice()...))
 		}
-		nodes = nodes.Set(n...)
+		nodes |= n
 	}
 
 	return nodes.IDs(), nil
@@ -390,7 +390,7 @@ func (a *Allocator) expand(from NodeMask, allow KindMask) (NodeMask, KindMask) {
 				ids := a.FilterNodeIDs(n.distance.idsets[d], filter)
 				//log.Debug("    nodes %s", ids)
 				ids = ids &^ from
-				if ids.Size() == 0 || minDist < d {
+				if ids == 0 || minDist < d {
 					continue
 				}
 				distMap[d] |= ids
@@ -400,7 +400,7 @@ func (a *Allocator) expand(from NodeMask, allow KindMask) (NodeMask, KindMask) {
 		}
 
 		if minDist < math.MaxInt {
-			nodes = nodes.Set(distMap[minDist].IDs()...)
+			nodes |= distMap[minDist]
 			kinds.SetKind(k)
 		}
 	}
@@ -425,8 +425,6 @@ func (a *Allocator) prepareNode(node *Node) {
 	for _, id := range a.ids {
 		d := node.distance.vector[id]
 		log.Debug("  - node #%d at %d distance", id, d)
-		//set := idsets[d]
-		//idsets[d] = *(set.Set(id))
 		idsets[d] |= (1 << id)
 	}
 	node.distance.idsets = idsets
