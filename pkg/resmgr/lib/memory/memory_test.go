@@ -648,20 +648,6 @@ func TestAllocate(t *testing.T) {
 			require.Nil(t, err, tc.name)
 			require.NotNil(t, nodes, tc.name)
 		}
-
-		/*
-			nodes, updates, err := a.Allocate(&Request{
-				Workload: wlID,
-				Amount:   tc.amount,
-				Kinds:    MaskForKinds(tc.kinds...),
-				Nodes:    NodeMaskForIDs(tc.from...),
-			})
-
-				if tc.failure == nil {
-					require.Nil(t, err, tc.name)
-					require.Equal(t, tc.nodes, nodes, tc.name)
-					require.Equal(t, tc.updates, updates, tc.name)
-				}*/
 	}
 }
 
@@ -773,73 +759,95 @@ func TestMoreOfAllocate(t *testing.T) {
 
 	hwName = "4DRAM"
 	a = allocators[hwName]
-	for idx, tc := range []*testCase{
-		{
-			name:    "fitting allocation from NUMA node #0",
-			amount:  2,
-			kinds:   allocDRAM,
-			from:    []ID{0},
-			nodes:   []ID{0},
-			updates: nil,
-		},
-		{
-			name:    "fitting allocation from NUMA node #1",
-			amount:  2,
-			kinds:   allocDRAM,
-			from:    []ID{1},
-			nodes:   []ID{1},
-			updates: nil,
-		},
-		{
-			name:    "fitting allocation from NUMA nodes #0,2",
-			amount:  4,
-			kinds:   allocDRAM,
-			from:    []ID{0, 2},
-			nodes:   []ID{0, 2},
-			updates: nil,
-		},
-		{
-			name:    "fitting allocation from NUMA nodes #1,3",
-			amount:  4,
-			kinds:   allocDRAM,
-			from:    []ID{1, 3},
-			nodes:   []ID{1, 3},
-			updates: nil,
-		},
-		{
-			name:    "overflowing allocation from NUMA nodes #0,1,2,3",
-			amount:  3,
-			kinds:   allocDRAM,
-			from:    []ID{0},
-			nodes:   []ID{0, 1, 2, 3},
-			updates: nil,
-		},
-		{
-			name:    "overflowing allocation from NUMA nodes #0,1,2,3",
-			amount:  1,
-			kinds:   allocDRAM,
-			from:    []ID{1},
-			nodes:   []ID{1},
-			updates: nil,
-		},
-	} {
-		testName := hwName + "/" + tc.name
+	for round := range []int{0, 1} {
+		allocated := []string{}
+		for idx, tc := range []*testCase{
+			{
+				name:    "fitting allocation from NUMA node #0",
+				amount:  2,
+				kinds:   allocDRAM,
+				from:    []ID{0},
+				nodes:   []ID{0},
+				updates: nil,
+			},
+			{
+				name:    "fitting allocation from NUMA node #1",
+				amount:  2,
+				kinds:   allocDRAM,
+				from:    []ID{1},
+				nodes:   []ID{1},
+				updates: nil,
+			},
+			{
+				name:    "fitting allocation from NUMA nodes #0,2",
+				amount:  4,
+				kinds:   allocDRAM,
+				from:    []ID{0, 2},
+				nodes:   []ID{0, 2},
+				updates: nil,
+			},
+			{
+				name:    "fitting allocation from NUMA nodes #1,3",
+				amount:  4,
+				kinds:   allocDRAM,
+				from:    []ID{1, 3},
+				nodes:   []ID{1, 3},
+				updates: nil,
+			},
+			{
+				name:    "fitting allocation from NUMA node #0",
+				amount:  1,
+				kinds:   allocDRAM,
+				from:    []ID{0},
+				nodes:   []ID{0},
+				updates: nil,
+			},
+			{
+				name:    "fitting allocation from NUMA node #1",
+				amount:  1,
+				kinds:   allocDRAM,
+				from:    []ID{1},
+				nodes:   []ID{1},
+				updates: nil,
+			},
+			{
+				name:    "fitting allocation from NUMA node #0",
+				amount:  1,
+				kinds:   allocDRAM,
+				from:    []ID{0},
+				nodes:   []ID{0},
+				updates: nil,
+			},
+			{
+				name:    "overflowing allocation from NUMA node #1",
+				amount:  1,
+				kinds:   allocDRAM,
+				from:    []ID{1},
+				nodes:   []ID{1},
+				updates: nil,
+			},
+		} {
+			var (
+				testName            = hwName + "/" + tc.name
+				wlID                = strconv.Itoa(idx)
+				nodes, updates, err = a.Allocate(&Request{
+					Workload: wlID,
+					Amount:   tc.amount,
+					Kinds:    MaskForKinds(tc.kinds...),
+					Nodes:    NodeMaskForIDs(tc.from...),
+				})
+			)
 
-		nodes, updates, err := a.Allocate(&Request{
-			Workload: strconv.Itoa(idx),
-			Amount:   tc.amount,
-			Kinds:    MaskForKinds(tc.kinds...),
-			Nodes:    NodeMaskForIDs(tc.from...),
-		})
+			if tc.fail {
+				require.NotNil(t, err, testName)
+				require.Nil(t, nodes, testName)
+				require.Nil(t, updates, testName)
+				continue
+			}
 
-		if tc.fail {
-			require.NotNil(t, err, testName)
-			require.Nil(t, nodes, testName)
-			require.Nil(t, updates, testName)
-		} else {
 			t.Logf("allocated nodes %v, updated workloads %v", nodes, updates)
 			require.Nil(t, err, testName)
-			require.NotNil(t, nodes, testName)
+			require.Equal(t, tc.nodes, nodes, testName)
 			if tc.updates != nil {
 				workloads := []string{}
 				for wl := range tc.updates {
@@ -848,6 +856,14 @@ func TestMoreOfAllocate(t *testing.T) {
 				sort.Strings(updates)
 				sort.Strings(workloads)
 				require.Equal(t, workloads, updates, testName)
+			}
+
+			allocated = append(allocated, wlID)
+		}
+		if round == 0 {
+			for _, wl := range allocated {
+				err = a.Release(wl)
+				require.Nil(t, err)
 			}
 		}
 	}

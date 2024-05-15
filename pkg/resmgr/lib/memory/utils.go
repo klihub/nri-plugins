@@ -56,18 +56,12 @@ func (zones *Zones) usage(nodes NodeMask) int64 {
 		u = z.usage
 	}
 
-	if nodes == NodeMaskForIDs(1) {
-		log.Debug("- zone %s, direct usage %d...", nodes, u)
-	}
-
 	for m, z := range zones.zones {
 		if (m&nodes) == m && m != nodes {
 			u += z.usage
-			if nodes == NodeMaskForIDs(1) {
-				log.Debug("+ zone %s + sub-zone %s direct usage %d = %d...", nodes, m, z.usage, u)
-			}
 		}
 	}
+
 	return u
 }
 
@@ -76,7 +70,7 @@ func (zones *Zones) free(nodes NodeMask) int64 {
 }
 
 func (zones *Zones) add(nodes NodeMask, workload string, amount int64) {
-	log.Debug("...add #%s (%d) to %s", workload, amount, nodes)
+	log.Debug("%s: add workload #%s (%d)", nodes, workload, amount)
 	z, ok := zones.zones[nodes]
 	if !ok {
 		z = &Zone{

@@ -395,9 +395,7 @@ func (a *Allocator) expand(from NodeMask, allow KindMask) (NodeMask, KindMask) {
 		for _, id := range from.IDs() {
 			n := a.nodes[id]
 			for _, d := range n.distance.sorted[1:] {
-				//log.Debug("- considering nodes at distance %d...", d)
 				ids := a.FilterNodeIDs(n.distance.idsets[d], filter)
-				//log.Debug("    nodes %s", ids)
 				ids = ids &^ from
 				if ids == 0 || minDist < d {
 					continue
