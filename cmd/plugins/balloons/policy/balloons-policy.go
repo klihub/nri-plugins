@@ -25,6 +25,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	cpucontrol "github.com/containers/nri-plugins/pkg/resmgr/control/cpu"
 	"github.com/containers/nri-plugins/pkg/resmgr/events"
+	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 	policy "github.com/containers/nri-plugins/pkg/resmgr/policy"
 	"github.com/containers/nri-plugins/pkg/utils"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
@@ -68,6 +69,7 @@ type balloons struct {
 	balloons           []*Balloon  // balloon instances: reserved, default and user-defined
 
 	cpuAllocator cpuallocator.CPUAllocator // CPU allocator used by the policy
+	memAllocator *libmem.Allocator         // memory allocator used by the policy
 }
 
 // Balloon contains attributes of a balloon instance
@@ -158,6 +160,12 @@ func (p *balloons) Setup(policyOptions *policy.BackendOptions) error {
 	p.options = policyOptions
 	p.cch = policyOptions.Cache
 	p.cpuAllocator = cpuallocator.NewCPUAllocator(policyOptions.System)
+
+	malloc, err := libmem.NewAllocator(libmem.WithSystemNodes(policyOptions.System))
+	if err != nil {
+		return balloonsError("failed to create memory allocator: %w", err)
+	}
+	p.memAllocator = malloc
 
 	log.Info("setting up %s policy...", PolicyName)
 	if p.cpuTree, err = NewCpuTreeFromSystem(); err != nil {
@@ -1396,6 +1404,9 @@ func (p *balloons) assignContainer(c cache.Container, bln *Balloon) {
 
 // dismissContainer removes a container from a balloon
 func (p *balloons) dismissContainer(c cache.Container, bln *Balloon) {
+	if err := p.memAllocator.Release(c.GetID()); err != nil {
+		log.Error("dismissContainer: failed to release memory for %s: %v", c.PrettyName(), err)
+	}
 	podID := c.GetPodID()
 	bln.PodIDs[podID] = removeString(bln.PodIDs[podID], c.GetID())
 	if len(bln.PodIDs[podID]) == 0 {
@@ -1417,11 +1428,93 @@ func (p *balloons) pinCpuMem(c cache.Container, cpus cpuset.CPUSet, mems idset.I
 	if p.bpoptions.PinMemory == nil || *p.bpoptions.PinMemory {
 		if c.PreserveMemoryResources() {
 			log.Debug("  - preserving %s pinning to memory %q", c.PrettyName, c.GetCpusetMems())
+			preserveMems, err := parseCpusetMems(c.GetCpusetMems())
+			if err != nil {
+				log.Error("failed to parse CpusetMems: %v", err)
+			} else {
+				zone := p.allocMem(c, preserveMems, true)
+				log.Debug("  - allocated preserved memory %s", c.PrettyName, zone)
+				c.SetCpusetMems(zone.MemsetString())
+			}
 		} else {
 			log.Debug("  - pinning %s to memory %s", c.PrettyName(), mems)
-			c.SetCpusetMems(mems.String())
+			zone := p.allocMem(c, mems, false)
+			log.Debug("  - allocated memory %s", c.PrettyName, zone)
+			c.SetCpusetMems(zone.MemsetString())
 		}
 	}
+}
+
+func (p *balloons) allocMem(c cache.Container, mems idset.IDSet, preserve bool) libmem.NodeMask {
+	var (
+		amount = getMemoryLimit(c)
+		nodes  = libmem.NewNodeMask(mems.Members()...)
+		types  = p.memAllocator.ZoneType(nodes)
+		req    *libmem.Request
+
+		zone    libmem.NodeMask
+		updates map[string]libmem.NodeMask
+		err     error
+	)
+
+	if _, ok := p.memAllocator.AllocatedZone(c.GetID()); !ok {
+		if !c.PreserveMemoryResources() {
+			req = libmem.Container(
+				c.GetID(),
+				c.PrettyName(),
+				amount,
+				string(c.GetQOSClass()),
+				nodes,
+				types,
+			)
+		} else {
+			req = libmem.PreserveContainer(
+				c.GetID(),
+				c.PrettyName(),
+				amount,
+				nodes,
+				types,
+			)
+		}
+		zone, updates, err = p.memAllocator.Allocate(req)
+	} else {
+		zone, updates, err = p.memAllocator.Realloc(c.GetID(), nodes, types)
+	}
+
+	if err != nil {
+		log.Error("allocMem: falling back to %s, failed to allocate memory for %s: %v",
+			nodes, c.PrettyName(), err)
+		return nodes
+	}
+
+	for oID, oz := range updates {
+		if oc, ok := p.cch.LookupContainer(oID); ok {
+			oc.SetCpusetMems(oz.MemsetString())
+		}
+	}
+
+	return zone
+}
+
+func parseCpusetMems(mems string) (idset.IDSet, error) {
+	cset, err := cpuset.Parse(mems)
+	if err != nil {
+		return idset.NewIDSet(), err
+	}
+	return idset.NewIDSet(cset.List()...), nil
+}
+
+func getMemoryLimit(c cache.Container) int64 {
+	res, ok := c.GetResourceUpdates()
+	if !ok {
+		res = c.GetResourceRequirements()
+	}
+
+	if limit, ok := res.Limits[corev1.ResourceMemory]; ok {
+		return limit.Value()
+	}
+
+	return 0
 }
 
 // balloonsError formats an error from this policy.
