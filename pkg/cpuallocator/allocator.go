@@ -948,7 +948,7 @@ func (c *topologyCache) discoverCPUClusters(sys sysfs.System) {
 		log.Debug("*** scanning package #%d...", id)
 		for _, die := range pkg.DieIDs() {
 			log.Debug("  scanning die #%d/#%d...", id, die)
-			for _, cl := range pkg.LogicalDieClusterIDs(id) {
+			for _, cl := range pkg.LogicalDieClusterIDs(die) {
 				log.Debug("    scanning cluster #%d/#%d/#%d...", id, die, cl)
 				log.Debug("      cpus: %s", pkg.LogicalDieClusterCPUSet(die, cl))
 				if cpus := pkg.LogicalDieClusterCPUSet(die, cl); cpus.Size() > 0 {
