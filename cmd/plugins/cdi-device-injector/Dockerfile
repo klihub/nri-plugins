@@ -9,6 +9,7 @@ WORKDIR /go/builder
 
 # Fetch go dependencies in a separate layer for caching
 COPY go.mod go.sum ./
+COPY pkg/topology/ pkg/topology/
 RUN go mod download
 
 # Build the nri-cdi-device-injector plugin.
