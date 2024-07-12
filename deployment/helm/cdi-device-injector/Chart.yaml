@@ -1,0 +1,11 @@
+apiVersion: v2
+appVersion: unstable
+description: |
+  The cdi-device-injector NRI plugin provides controlled mechansim for injecting
+  CDI devices into containers.
+name: nri-cdi-device-injector
+sources:
+ - https://github.com/containers/nri-plugins
+home: https://github.com/containers/nri-plugins
+type: application
+version: v0.0.0
