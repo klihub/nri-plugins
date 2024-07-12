@@ -75,7 +75,8 @@ PLUGINS ?= \
 	nri-resource-policy-template \
 	nri-memory-qos \
 	nri-memtierd \
-        nri-sgx-epc
+        nri-sgx-epc \
+	nri-cdi-device-injector
 
 BINARIES ?= \
 	config-manager
@@ -275,6 +276,14 @@ $(BIN_PATH)/nri-resource-policy-template: \
     $(shell for f in cmd/plugins/template/*.go; do echo $$f; done; \
                 for dir in $(shell $(GO_DEPS) ./cmd/plugins/template/... | \
                           grep -E '(/nri-plugins/)|(cmd/plugins/template/)' | \
+                          sed 's#github.com/containers/nri-plugins/##g'); do \
+                find $$dir -name \*.go; \
+            done | sort | uniq)
+
+$(BIN_PATH)/nri-cdi-device-injector: \
+    $(shell for f in cmd/plugins/cdi-device-injector/*.go; do echo $$f; done; \
+            for dir in $(shell $(GO_DEPS) ./cmd/plugins/cdi-device-injector/... | \
+                          grep -E '(/nri-plugins/)|(cmd/plugins/cdi-device-injector/)' | \
                           sed 's#github.com/containers/nri-plugins/##g'); do \
                 find $$dir -name \*.go; \
             done | sort | uniq)
