@@ -4,7 +4,7 @@
   <meta charset="utf-8" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SGX EPC Limit Plugin &mdash; NRI Plugins v0.7.0-22-g0ff5962 documentation</title>
+  <title>CDI Device Injector Plugin &mdash; NRI Plugins v0.7.0-22-g0ff5962 documentation</title>
       <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
       <link rel="stylesheet" href="../../../_static/css/theme.css" type="text/css" />
   <!--[if lt IE 9]>
@@ -20,8 +20,8 @@
     <script src="../../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../../genindex.html" />
     <link rel="search" title="Search" href="../../../search.html" />
-    <link rel="next" title="CDI Device Injector Plugin" href="cdi-device-injector.html" />
-    <link rel="prev" title="Memtierd Plugin" href="memtierd.html" /> 
+    <link rel="next" title="Operator" href="../operator/index.html" />
+    <link rel="prev" title="SGX EPC Limit Plugin" href="sgx-epc.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -85,9 +85,9 @@
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
           <li class="breadcrumb-item"><a href="../index.html">Deployment</a></li>
           <li class="breadcrumb-item"><a href="index.html">Helm</a></li>
-      <li class="breadcrumb-item active">SGX EPC Limit Plugin</li>
+      <li class="breadcrumb-item active">CDI Device Injector Plugin</li>
       <li class="wy-breadcrumbs-aside">
-            <a href="../../../_sources/docs/deployment/helm/sgx-epc.md.txt" rel="nofollow"> View page source</a>
+            <a href="../../../_sources/docs/deployment/helm/cdi-device-injector.md.txt" rel="nofollow"> View page source</a>
       </li>
   </ul>
   <hr/>
@@ -95,11 +95,10 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="sgx-epc-limit-plugin">
-<h1>SGX EPC Limit Plugin<a class="headerlink" href="#sgx-epc-limit-plugin" title="Permalink to this heading"></a></h1>
-<p>This chart deploys the sgx-epc Node Resource Interface (NRI) plugin. This plugin
-can be used to set limits on the encrypted page cache usage of containers using
-annotations and (a yet to be merged pull request to) the cgroup v2 misc controller.</p>
+  <section id="cdi-device-injector-plugin">
+<h1>CDI Device Injector Plugin<a class="headerlink" href="#cdi-device-injector-plugin" title="Permalink to this heading"></a></h1>
+<p>This chart deploys the CDI Device Injector NRI plugin. This plugin provides
+a controlled mechansim for injecting CDI devices into containers.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this heading"></a></h2>
 <ul>
@@ -116,7 +115,7 @@ release version to use the NRI feature.</p></li>
 detailed instructions. You can optionally enable the NRI in containerd
 using the Helm chart during the chart installation simply by setting the
 <code class="docutils literal notranslate"><span class="pre">nri.runtime.patchConfig</span></code> parameter. For instance,</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>install<span class="w"> </span>my-sgx-epc<span class="w"> </span>nri-plugins/nri-sgx-epc<span class="w"> </span>--set<span class="w"> </span>nri.runtime.patchConfig<span class="o">=</span><span class="nb">true</span><span class="w"> </span>--namespace<span class="w"> </span>kube-system
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>install<span class="w"> </span>my-cdi-injector<span class="w"> </span>nri-plugins/cdi-device-injector<span class="w"> </span>--set<span class="w"> </span>nri.runtime.patchConfig<span class="o">=</span><span class="nb">true</span><span class="w"> </span>--namespace<span class="w"> </span>kube-system
 </pre></div>
 </div>
 <p>Enabling <code class="docutils literal notranslate"><span class="pre">nri.runtime.patchConfig</span></code> creates an init container to turn on
@@ -134,7 +133,7 @@ release version to use the NRI feature</p></li>
 detailed instructions.  You can optionally enable the NRI in CRI-O using
 the Helm chart during the chart installation simply by setting the
 <code class="docutils literal notranslate"><span class="pre">nri.runtime.patchConfig</span></code> parameter. For instance,</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>install<span class="w"> </span>my-sgx-epc<span class="w"> </span>nri-plugins/nri-sgx-epc<span class="w"> </span>--namespace<span class="w"> </span>kube-system<span class="w"> </span>--set<span class="w"> </span>nri.runtime.patchConfig<span class="o">=</span><span class="nb">true</span>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>install<span class="w"> </span>my-cdi-injector<span class="w"> </span>nri-plugins/nri-cdi-device-injector<span class="w"> </span>--set<span class="w"> </span>nri.runtime.patchConfig<span class="o">=</span><span class="nb">true</span><span class="w"> </span>--namespace<span class="w"> </span>kube-system
 </pre></div>
 </div>
 </li>
@@ -146,21 +145,21 @@ the Helm chart during the chart installation simply by setting the
 </section>
 <section id="installing-the-chart">
 <h2>Installing the Chart<a class="headerlink" href="#installing-the-chart" title="Permalink to this heading"></a></h2>
-<p>Path to the chart: <code class="docutils literal notranslate"><span class="pre">nri-sgx-epc</span></code>.</p>
+<p>Path to the chart: <code class="docutils literal notranslate"><span class="pre">nri-cdi-device-injector</span></code>.</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>repo<span class="w"> </span>add<span class="w"> </span>nri-plugins<span class="w"> </span>https://containers.github.io/nri-plugins
-helm<span class="w"> </span>install<span class="w"> </span>my-sgx-epc<span class="w"> </span>nri-plugins/nri-sgx-epc<span class="w"> </span>--namespace<span class="w"> </span>kube-system
+helm<span class="w"> </span>install<span class="w"> </span>my-cdi-injector<span class="w"> </span>nri-plugins/nri-cdi-device-injector<span class="w"> </span>--namespace<span class="w"> </span>kube-system
 </pre></div>
 </div>
-<p>The command above deploys sgx-epc NRI plugin on the Kubernetes cluster within
-the <code class="docutils literal notranslate"><span class="pre">kube-system</span></code> namespace with default configuration. To customize the
+<p>The command above deploys cdi-device-injector NRI plugin on the Kubernetes cluster
+within the <code class="docutils literal notranslate"><span class="pre">kube-system</span></code> namespace with default configuration. To customize the
 available parameters as described in the <a class="reference internal" href="#configuration-options">Configuration options</a>
 below, you have two options: you can use the <code class="docutils literal notranslate"><span class="pre">--set</span></code> flag or create a custom
 values.yaml file and provide it using the <code class="docutils literal notranslate"><span class="pre">-f</span></code> flag. For example:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install the sgx-epc plugin with custom values provided using the --set option</span>
-helm<span class="w"> </span>install<span class="w"> </span>my-sgx-epc<span class="w"> </span>nri-plugins/nri-sgx-epc<span class="w"> </span>--namespace<span class="w"> </span>kube-system<span class="w"> </span>--set<span class="w"> </span>nri.runtime.patchConfig<span class="o">=</span><span class="nb">true</span>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install the cdi-device-injector plugin with custom values provided using the --set option</span>
+helm<span class="w"> </span>install<span class="w"> </span>my-cdi-injector<span class="w"> </span>nri-plugins/nri-cdi-device-injector<span class="w"> </span>--namespace<span class="w"> </span>kube-system<span class="w"> </span>--set<span class="w"> </span>nri.runtime.patchConfig<span class="o">=</span><span class="nb">true</span>
 </pre></div>
 </div>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install the sgx-epc plugin with custom values specified in a custom values.yaml file</span>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install the cdi-device-injector plugin with custom values specified in a custom values.yaml file</span>
 cat<span class="w"> </span><span class="s">&lt;&lt;EOF &gt; myPath/values.yaml</span>
 <span class="s">nri:</span>
 <span class="s">  runtime:</span>
@@ -174,14 +173,14 @@ cat<span class="w"> </span><span class="s">&lt;&lt;EOF &gt; myPath/values.yaml</
 <span class="s">  effect: &quot;NoSchedule&quot;</span>
 <span class="s">EOF</span>
 
-helm<span class="w"> </span>install<span class="w"> </span>my-sgx-epc<span class="w"> </span>nri-plugins/nri-sgx-epc<span class="w"> </span>--namespace<span class="w"> </span>kube-system<span class="w"> </span>-f<span class="w"> </span>myPath/values.yaml
+helm<span class="w"> </span>install<span class="w"> </span>my-cdi-injector<span class="w"> </span>nri-plugins/nri-cdi-device-injector<span class="w"> </span>--namespace<span class="w"> </span>kube-system<span class="w"> </span>-f<span class="w"> </span>myPath/values.yaml
 </pre></div>
 </div>
 </section>
 <section id="uninstalling-the-chart">
 <h2>Uninstalling the Chart<a class="headerlink" href="#uninstalling-the-chart" title="Permalink to this heading"></a></h2>
-<p>To uninstall the sgx-epc plugin run the following command:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>delete<span class="w"> </span>my-sgx-epc<span class="w"> </span>--namespace<span class="w"> </span>kube-system
+<p>To uninstall the cdi-device-injector plugin run the following command:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>helm<span class="w"> </span>delete<span class="w"> </span>my-cdi-injector<span class="w"> </span>--namespace<span class="w"> </span>kube-system
 </pre></div>
 </div>
 </section>
@@ -198,7 +197,7 @@ customize with their own values, along with the default values.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">image.name</span></code></p></td>
-<td><p><a class="reference external" href="https://ghcr.io/containers/nri-plugins/nri-sgx-epc">ghcr.io/containers/nri-plugins/nri-sgx-epc</a></p></td>
+<td><p><a class="reference external" href="https://ghcr.io/containers/nri-plugins/cdi-device-injector">ghcr.io/containers/nri-plugins/cdi-device-injector</a></p></td>
 <td><p>container image name</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">image.tag</span></code></p></td>
@@ -210,7 +209,7 @@ customize with their own values, along with the default values.</p>
 <td><p>image pull policy</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resources.cpu</span></code></p></td>
-<td><p>25m</p></td>
+<td><p>10m</p></td>
 <td><p>cpu resources for the Pod</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resources.memory</span></code></p></td>
@@ -270,8 +269,8 @@ customize with their own values, along with the default values.</p>
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="memtierd.html" class="btn btn-neutral float-left" title="Memtierd Plugin" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="cdi-device-injector.html" class="btn btn-neutral float-right" title="CDI Device Injector Plugin" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="sgx-epc.html" class="btn btn-neutral float-left" title="SGX EPC Limit Plugin" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../operator/index.html" class="btn btn-neutral float-right" title="Operator" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>
