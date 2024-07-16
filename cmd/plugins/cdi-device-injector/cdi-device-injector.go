@@ -19,8 +19,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/sirupsen/logrus"
 	"sigs.k8s.io/yaml"
@@ -29,10 +31,17 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"github.com/containerd/nri/pkg/stub"
+
+	"github.com/containers/nri-plugins/pkg/kubernetes/client"
+	"github.com/containers/nri-plugins/pkg/kubernetes/watch"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
-	cdiDeviceKey = "cdi.nri.io"
+	cdiDeviceKey    = "cdi.nri.io"
+	allowPatternKey = cdiDeviceKey + "/" + "allow"
+	nsEnvVar        = "POD_NAMESPACE"
 )
 
 var (
@@ -43,8 +52,15 @@ var (
 // our injector plugin
 type plugin struct {
 	stub                    stub.Stub
+	defaultCDIDevicePattern string
 	allowedCDIDevicePattern string
+	allowedLock             sync.Mutex
 	cdiCache                *cdiCache
+
+	kubeConfig string
+	namespace  string
+	client     *client.Client
+	w          watch.Interface
 }
 
 // CreateContainer handles container creation requests.
@@ -90,6 +106,64 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, conta
 	}
 
 	return adjust, nil, nil
+}
+
+func (p *plugin) setupNamespaceWatch() error {
+	p.namespace = os.Getenv(nsEnvVar)
+	if p.namespace == "" {
+		log.Warnf("%q not set in environment, will not watch namespace", nsEnvVar)
+		return nil
+	}
+
+	log.Infof("will watch namespace %q", p.namespace)
+
+	cli, err := client.New(client.WithKubeOrInClusterConfig(p.kubeConfig))
+	if err != nil {
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+	p.client = cli
+
+	w, err := watch.Object(p, "allowed-device-pattern")
+	if err != nil {
+		return err
+	}
+	p.w = w
+
+	go func() {
+		for e := range p.w.ResultChan() {
+			switch e.Type {
+			case watch.Added, watch.Modified:
+				if ns, ok := e.Object.(*corev1.Namespace); ok {
+					if pattern, ok := ns.Annotations[allowPatternKey]; ok {
+						p.setAllowedPattern(pattern)
+					}
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (p plugin) CreateWatch() (watch.Interface, error) {
+	return p.client.CoreV1().Namespaces().Watch(
+		context.Background(),
+		metav1.ListOptions{
+			FieldSelector: "metadata.name=" + p.namespace,
+		},
+	)
+}
+
+func (p *plugin) setAllowedPattern(pattern string) {
+	p.allowedLock.Lock()
+	defer p.allowedLock.Unlock()
+
+	if pattern == p.allowedCDIDevicePattern {
+		return
+	}
+
+	p.allowedCDIDevicePattern = pattern
+	log.Infof("allowed CDI device pattern is now %q", pattern)
 }
 
 func parseCdiDevices(annotations map[string]string, ctr string) ([]string, error) {
@@ -160,7 +234,8 @@ func main() {
 	var (
 		pluginName              string
 		pluginIdx               string
-		allowedCDIDevicePattern string
+		defaultCDIDevicePattern string
+		kubeConfig              string
 		opts                    []stub.Option
 		err                     error
 	)
@@ -172,7 +247,8 @@ func main() {
 
 	flag.StringVar(&pluginName, "name", "", "plugin name to register to NRI")
 	flag.StringVar(&pluginIdx, "idx", "", "plugin index to register to NRI")
-	flag.StringVar(&allowedCDIDevicePattern, "allowed-cdi-device-pattern", "*", "glob pattern for allowed CDI device names")
+	flag.StringVar(&defaultCDIDevicePattern, "default-cdi-device-pattern", "*", "default glob pattern for allowed CDI device names if namespace is not annotated with "+allowPatternKey)
+	flag.StringVar(&kubeConfig, "kubeconfig", "", "kubeconfig file to use")
 	flag.BoolVar(&verbose, "verbose", false, "enable (more) verbose logging")
 	flag.Parse()
 
@@ -184,12 +260,20 @@ func main() {
 	}
 
 	p := &plugin{
-		allowedCDIDevicePattern: allowedCDIDevicePattern,
+		defaultCDIDevicePattern: defaultCDIDevicePattern,
 		cdiCache: &cdiCache{
 			// TODO: We should allow this to be configured
 			Cache: cdi.GetDefaultCache(),
 		},
+		kubeConfig: kubeConfig,
 	}
+
+	p.setAllowedPattern(defaultCDIDevicePattern)
+
+	if err := p.setupNamespaceWatch(); err != nil {
+		log.Fatalf("failed to set up namespace watch: %v", err)
+	}
+
 	if p.stub, err = stub.New(p, opts...); err != nil {
 		log.Fatalf("failed to create plugin stub: %v", err)
 	}
