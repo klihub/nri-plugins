@@ -63,6 +63,11 @@ type plugin struct {
 	w          watch.Interface
 }
 
+func (p *plugin) onClose() {
+	log.Error("connection to NRI/runtime lost, exiting...")
+	os.Exit(1)
+}
+
 // CreateContainer handles container creation requests.
 func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, container *api.Container) (_ *api.ContainerAdjustment, _ []*api.ContainerUpdate, err error) {
 	defer func() {
@@ -236,7 +241,6 @@ func main() {
 		pluginIdx               string
 		defaultCDIDevicePattern string
 		kubeConfig              string
-		opts                    []stub.Option
 		err                     error
 	)
 
@@ -252,13 +256,6 @@ func main() {
 	flag.BoolVar(&verbose, "verbose", false, "enable (more) verbose logging")
 	flag.Parse()
 
-	if pluginName != "" {
-		opts = append(opts, stub.WithPluginName(pluginName))
-	}
-	if pluginIdx != "" {
-		opts = append(opts, stub.WithPluginIdx(pluginIdx))
-	}
-
 	p := &plugin{
 		defaultCDIDevicePattern: defaultCDIDevicePattern,
 		cdiCache: &cdiCache{
@@ -266,6 +263,15 @@ func main() {
 			Cache: cdi.GetDefaultCache(),
 		},
 		kubeConfig: kubeConfig,
+	}
+
+	opts := []stub.Option{stub.WithOnClose(p.onClose)}
+
+	if pluginName != "" {
+		opts = append(opts, stub.WithPluginName(pluginName))
+	}
+	if pluginIdx != "" {
+		opts = append(opts, stub.WithPluginIdx(pluginIdx))
 	}
 
 	p.setAllowedPattern(defaultCDIDevicePattern)
