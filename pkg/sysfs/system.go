@@ -277,6 +277,11 @@ var (
 		PerformanceCore: "OVERRIDE_SYS_CORE_CPUS",
 		EfficientCore:   "OVERRIDE_SYS_ATOM_CPUS",
 	}
+	memoryTypeEnvOverrides = map[MemoryType]string{
+		MemoryTypeDRAM: "OVERRIDE_DRAM_NODES",
+		MemoryTypePMEM: "OVERRIDE_PMEM_NODES",
+		MemoryTypeHBM:  "OVERRIDE_HBM_NODES",
+	}
 )
 
 // MemInfo contains data read from a NUMA node meminfo file.
@@ -1246,6 +1251,20 @@ func (sys *system) discoverNodes() error {
 	sys.Logger.Info("NUMA nodes with CPUs: %s", cpuNodes.String())
 	sys.Logger.Info("NUMA nodes with (any) memory: %s", memoryNodes.String())
 	sys.Logger.Info("NUMA nodes with normal memory: %s", normalMemNodes.String())
+
+	memTypeOverrides := map[MemoryType]cpuset.CPUSet{}
+	for memType, name := range memoryTypeEnvOverrides {
+		if override := os.Getenv(name); override != "" {
+			log.Warn("using memory type environment override %s=%s...", name, override)
+			nodes, err := cpuset.Parse(override)
+			if err != nil {
+				return fmt.Errorf("failed to parse %s env. override %q: %v", memType, override, err)
+			}
+			if nodes.Size() > 0 {
+				memTypeOverrides[memType] = nodes
+			}
+		}
+	}
 
 	noMemNodes := onlineNodes.Difference(memoryNodes)
 	dramNodes := cpuNodes.Clone()
