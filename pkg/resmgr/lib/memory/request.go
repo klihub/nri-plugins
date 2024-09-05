@@ -297,32 +297,39 @@ func NewID() string {
 
 // SortRequestsByInertiaAndSize is a helper to sort requests by increasing
 // inertia, size, and age in this order.
-func SortRequestsByInertiaAndSize(a, b *Request) int {
-	if lessInertia := a.Inertia() - b.Inertia(); lessInertia != 0 {
-		return int(lessInertia)
-	}
+func FooSortRequestsByInertiaAndSize(a, b *Request) int {
+	/*
+		if lessInertia := a.Inertia() - b.Inertia(); lessInertia != 0 {
+			return int(lessInertia)
+		}
 
-	if smallerSize := a.Size() - b.Size(); smallerSize != 0 {
-		return int(smallerSize)
-	}
+		if smallerSize := a.Size() - b.Size(); smallerSize != 0 {
+			return int(smallerSize)
+		}
 
-	// TODO(klihub): We compare our internally set creation time stamps and
-	// return the younger of the two requests as a last resort to provide a
-	// stable sorting order.
-	//
-	// We probably should allow the caller to set the creation timestamp to
-	// that of the container. However currently there is no way of figuring
-	// that out using NRI.
-	// TODO(klihub): add container creation and startup timestamps to NRI.
-	//
-	// Also it might be a good idea to replace Inertia with a more flexible
-	// Priority. We could define default priorities for QoS classes and use
-	// those by default but allow the user to set arbitrary priorities to
-	// allow expressing other than QoS-implied priority and in a more fine-
-	// grained manner if necessary.
+		// TODO(klihub): We compare our internally set creation time stamps and
+		// return the younger of the two requests as a last resort to provide a
+		// stable sorting order.
+		//
+		// We probably should allow the caller to set the creation timestamp to
+		// that of the container. However currently there is no way of figuring
+		// that out using NRI.
+		// TODO(klihub): add container creation and startup timestamps to NRI.
+		//
+		// Also it might be a good idea to replace Inertia with a more flexible
+		// Priority. We could define default priorities for QoS classes and use
+		// those by default but allow the user to set arbitrary priorities to
+		// allow expressing other than QoS-implied priority and in a more fine-
+		// grained manner if necessary.
 
-	youngerAge := b.Created() - a.Created()
-	return int(youngerAge)
+		youngerAge := b.Created() - a.Created()
+		return int(youngerAge)
+	*/
+	return RequestSort(
+		RequestsBy(Increasing).Inertia(),
+		RequestsBy(Increasing).Size(),
+		RequestsBy(Increasing).Age(),
+	)(a, b)
 }
 
 // HumanReadableSize returns the given size as a human-readable string.
@@ -348,7 +355,31 @@ func prettySize(v int64) string {
 	return HumanReadableSize(v)
 }
 
-func SortRequests(requests map[string]*Request, sorter func(*Request, *Request) int) []*Request {
+// RequestPicker is used to pick requests from a slice or map.
+type RequestPicker func(*Request) bool
+
+func PickMaxInertia(limit Inertia) RequestPicker {
+	return func(r *Request) bool {
+		return r.Inertia() <= limit
+	}
+}
+
+// RequestSorter is used to sort a slice of requests.
+type RequestSorter func(r1, r2 *Request) int
+
+// SortRequests returns a slice of sorted requets picked from a map.
+func SortRequests(requests map[string]*Request, p RequestPicker, s RequestSorter) []*Request {
+	slice := make([]*Request, 0, len(requests))
+	for _, req := range requests {
+		if p == nil || p(req) {
+			slice = append(slice, req)
+		}
+	}
+	slices.SortFunc(slice, s)
+	return slice
+}
+
+/*func SortRequests(requests map[string]*Request, sorter func(*Request, *Request) int) []*Request {
 	slice := make([]*Request, 0, len(requests))
 	for _, req := range requests {
 		slice = append(slice, req)
@@ -357,4 +388,54 @@ func SortRequests(requests map[string]*Request, sorter func(*Request, *Request) 
 		slices.SortFunc(slice, sorter)
 	}
 	return slice
+}*/
+
+type Order = int
+
+const (
+	Increasing Order = 1
+	Decreasing Order = -1
+)
+
+func RequestSort(fns ...func(r1, r2 *Request) int) func(r1, r2 *Request) int {
+	return func(r1, r2 *Request) int {
+		for _, fn := range fns {
+			if diff := fn(r1, r2); diff != 0 {
+				return diff
+			}
+		}
+		return 0
+	}
+}
+
+type RequestsBy Order
+
+func (rb RequestsBy) Inertia() func(r1, r2 *Request) int {
+	if rb == 0 {
+		rb = 1
+	}
+	return func(r1, r2 *Request) int {
+		diff := int(r1.Inertia() - r2.Inertia())
+		return int(rb) * diff
+	}
+}
+
+func (rb RequestsBy) Size() func(r1, r2 *Request) int {
+	if rb == 0 {
+		rb = 1
+	}
+	return func(r1, r2 *Request) int {
+		diff := int(r1.Size() - r2.Size())
+		return int(rb) * diff
+	}
+}
+
+func (rb RequestsBy) Age() func(r1, r2 *Request) int {
+	if rb == 0 {
+		rb = 1
+	}
+	return func(r1, r2 *Request) int {
+		diff := int(r2.Created() - r1.Created())
+		return int(rb) * diff
+	}
 }

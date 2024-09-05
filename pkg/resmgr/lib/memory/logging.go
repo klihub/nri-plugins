@@ -15,6 +15,7 @@
 package libmem
 
 import (
+	"fmt"
 	"slices"
 
 	logger "github.com/containers/nri-plugins/pkg/log"
@@ -25,51 +26,65 @@ var (
 	details = logger.Get("libmem-details")
 )
 
-func (a *Allocator) DumpConfig() {
-	log.Info("memory allocator configuration")
+func (a *Allocator) DumpConfig(prefixFmt ...interface{}) {
+	prefix := formatPrefix(prefixFmt...)
+
+	log.Info("%smemory allocator configuration", prefix)
+
 	for id := range a.masks.nodes.all.Slice() {
 		n := a.nodes[id]
-		log.Info("  %s node #%d with %s memory", n.memType, n.id, prettySize(n.capacity))
-		log.Info("    distance vector %v", n.distance.vector)
+		if capa := n.Capacity(); capa != 0 {
+			log.Info("%s  %s node #%d with %d memory (%s)", prefix, n.Type(), n.ID(),
+				capa, prettySize(capa))
+		} else {
+			log.Info("%s  memoryless %s node #%d", prefix, n.Type(), n.ID())
+		}
+		log.Info("%s    distance vector %v", prefix, n.Distance().Vector())
 		n.ForeachDistance(func(d int, nodes NodeMask) bool {
-			log.Info("      at distance %d: %s", d, nodes)
+			log.Info("%s      at distance %d: %s", prefix, d, nodes)
 			return true
 		})
+		if cpus := n.CloseCPUs(); cpus.Size() > 0 {
+			log.Info("%s    close CPUs: %s", prefix, cpus)
+		} else {
+			log.Info("%s    no close CPUs", prefix)
+		}
 	}
 }
 
-func (a *Allocator) DumpState() {
-	a.DumpRequests()
-	a.DumpZones()
+func (a *Allocator) DumpState(prefixFmt ...interface{}) {
+	prefix := formatPrefix(prefixFmt...)
+	a.DumpRequests(prefix)
+	a.DumpZones(prefix)
 }
 
-func (a *Allocator) DumpRequests() {
+func (a *Allocator) DumpRequests(prefixFmt ...interface{}) {
 	if !details.DebugEnabled() {
 		return
 	}
+
+	prefix := formatPrefix(prefixFmt...)
 
 	if len(a.users) == 0 {
-		details.Debug("  no allocated requests")
+		details.Debug("%s  no requests", prefix)
 		return
 	}
 
-	details.Debug("  requests:")
-	for _, req := range SortRequests(a.requests,
-		func(r1, r2 *Request) int {
-			return int(r2.Created() - r1.Created())
-		},
-	) {
-		details.Debug("    - %s (assigned zone %s)", req, req.Zone())
+	details.Debug("%s  requests:", prefix)
+	for _, req := range SortRequests(a.requests, nil, RequestsBy(Increasing).Age()) {
+		details.Debug("%s    - %s (assigned zone %s)", prefix, req, req.Zone())
 	}
 }
 
-func (a *Allocator) DumpZones() {
+func (a *Allocator) DumpZones(prefixFmt ...interface{}) {
 	if !details.DebugEnabled() {
 		return
 	}
 
+	prefix := formatPrefix(prefixFmt...)
+
 	if len(a.zones) == 0 {
-		details.Debug("  no zones in use")
+		details.Debug("%s  no zones in use", prefix)
 		return
 	}
 
@@ -84,7 +99,7 @@ func (a *Allocator) DumpZones() {
 		return int(z1 - z2)
 	})
 
-	details.Debug("  zones:")
+	details.Debug("%s  zones:", prefix)
 	for _, z := range zones {
 		var (
 			zone = a.zones[z]
@@ -92,17 +107,31 @@ func (a *Allocator) DumpZones() {
 			capa = prettySize(a.ZoneCapacity(z))
 			used = prettySize(a.ZoneUsage(z))
 		)
-		details.Debug("   - zone %s, free %s (capacity %s, used %s)", z, free, capa, used)
+		details.Debug("%s   - zone %s, free %s (capacity %s, used %s)", prefix, z, free, capa, used)
 		if len(zone.users) == 0 {
 			continue
 		}
 
-		for _, req := range SortRequests(zone.users,
-			func(r1, r2 *Request) int {
-				return int(r2.Created() - r1.Created())
-			},
-		) {
-			details.Debug("      %s", req)
+		for _, req := range SortRequests(zone.users, nil, RequestsBy(Increasing).Age()) {
+			details.Debug("%s      %s", prefix, req)
 		}
 	}
+}
+
+func formatPrefix(args ...interface{}) string {
+	narg := len(args)
+	if narg == 0 {
+		return ""
+	}
+
+	prefix, ok := args[0].(string)
+	if !ok {
+		return "%%(!libmem:Bad-Prefix)"
+	}
+
+	if len(args) == 1 {
+		return prefix
+	}
+
+	return fmt.Sprintf(prefix, args[1:]...)
 }

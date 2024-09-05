@@ -14,10 +14,6 @@
 
 package libmem
 
-import (
-	"slices"
-)
-
 // Zone is a collection of Nodes which is collectively used to fulfill one
 // or more allocation requests.
 type Zone struct {
@@ -168,7 +164,14 @@ func (a *Allocator) zoneShrinkUsage(zone NodeMask, amount int64, limit Inertia, 
 	}
 
 	moved := int64(0)
-	for _, req := range z.pickAndSortRequests(limit) {
+	for _, req := range SortRequests(z.users,
+		PickMaxInertia(limit),
+		RequestSort(
+			RequestsBy(Increasing).Inertia(),
+			RequestsBy(Increasing).Size(),
+			RequestsBy(Increasing).Age(),
+		),
+	) {
 		if !req.IsStrict() || req.Types() == z.types|types {
 			a.zoneMove(zone|nodes, req)
 			moved += req.Size()
@@ -178,11 +181,22 @@ func (a *Allocator) zoneShrinkUsage(zone NodeMask, amount int64, limit Inertia, 
 		}
 	}
 
+	/*	for _, req := range z.pickAndSortRequests(limit) {
+		if !req.IsStrict() || req.Types() == z.types|types {
+			a.zoneMove(zone|nodes, req)
+			moved += req.Size()
+			if moved >= amount {
+				break
+			}
+		}
+	}*/
+
 	log.Debug("  - %s: freed up %s bytes of memory", zoneName(zone), prettySize(moved))
 
 	return moved
 }
 
+/*
 func (z *Zone) pickAndSortRequests(limit Inertia) []*Request {
 	requests := make([]*Request, 0, len(z.users))
 	for _, req := range z.users {
@@ -194,6 +208,7 @@ func (z *Zone) pickAndSortRequests(limit Inertia) []*Request {
 
 	return requests
 }
+*/
 
 func zoneName(zone NodeMask) string {
 	if zone != 0 {
