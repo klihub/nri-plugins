@@ -637,22 +637,54 @@ func (p *policy) updateSharedAllocations(grant *Grant) {
 func (p *policy) filterInsufficientResources(req Request, pools []Node) []Node {
 	filtered := make([]Node, 0)
 
-	required := req.MemAmountToAllocate()
+	memNeed := req.MemAmountToAllocate()
+	isolate := req.Isolate()
+	full, fraction := req.FullCPUs(), req.CPUFraction()
+
 	for _, node := range pools {
+		// check pool memory availability
 		memType := req.MemoryType()
 		if memType == memoryUnspec || memType == memoryPreserve {
 			memType = memoryAll
 		}
 
-		available := p.poolZoneFree(node, memType)
-		if available < required {
+		memAvail := p.poolZoneFree(node, memType)
+		if memAvail < memNeed {
 			log.Debug("%s has insufficient available %s memory (%s < %s)", node.Name(),
-				memType, prettyMem(available), prettyMem(required))
-		} else {
-			log.Debug("%s has enough available %s memory (%s >= %s)", node.Name(),
-				memType, prettyMem(available), prettyMem(required))
-			filtered = append(filtered, node)
+				memType, prettyMem(memAvail), prettyMem(memNeed))
+			continue
 		}
+
+		log.Debug("%s has enough available %s memory (%s >= %s)", node.Name(),
+			memType, prettyMem(memAvail), prettyMem(memNeed))
+
+		cs := node.FreeSupply()
+
+		// check pool cpu availability
+		isolated := cs.IsolatedCPUs().Size()
+		slicable := cs.AllocatableSharedCPU()
+
+		if isolate {
+			if isolated < full && slicable < 1000*full {
+				log.Debug("%s has insufficient slicable capacity (%dm) for %d isolated CPUs",
+					node.Name(), slicable, full)
+				continue
+			}
+
+			log.Debug("%s has enough slicable capacity (%dm) for %d isolated CPUs",
+				node.Name(), slicable, full)
+		}
+
+		if slicable < 1000*full+fraction {
+			log.Debug("%s has insufficient slicable capacity (%dm) for %d+%dm full+fractional CPU",
+				node.Name(), slicable, full, fraction)
+			continue
+		}
+
+		log.Debug("%s has enough slicable capacity (%dm) for %d+%dm full+fractional CPU",
+			node.Name(), slicable, full, fraction)
+
+		filtered = append(filtered, node)
 	}
 
 	return filtered
