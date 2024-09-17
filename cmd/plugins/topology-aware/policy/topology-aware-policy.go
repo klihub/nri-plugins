@@ -141,6 +141,7 @@ func (p *policy) Start() error {
 	p.checkColdstartOff()
 
 	p.root.Dump("<post-start>")
+	p.dumpAllocations("  <post-start>")
 
 	return nil
 }
@@ -155,12 +156,58 @@ func (p *policy) Sync(add []cache.Container, del []cache.Container) error {
 		p.AllocateResources(c)
 	}
 
+	p.dumpAllocations("  <post-sync>")
+
 	return nil
+}
+
+func (p *policy) dumpAllocations(format string, args ...interface{}) {
+	var (
+		prefix = fmt.Sprintf(format, args...)
+		cpu    = 0
+		mem    = int64(0)
+		ctr    = map[string]Grant{}
+		dup    = map[string][]Grant{}
+	)
+
+	for _, g := range p.allocations.grants {
+		log.Debug("%s %s (%s)", prefix, g, g.GetContainer().GetID())
+		cpu += 1000*g.ExclusiveCPUs().Size() + g.CPUPortion()
+		mem += g.GetMemorySize()
+
+		_, ok := p.cache.LookupContainer(g.GetContainer().GetID())
+		if !ok {
+			log.Error("%s %s STALE container among allocations, not found in cache", prefix, g)
+		}
+
+		key := g.GetContainer().PrettyName()
+		old, ok := ctr[key]
+		if ok {
+			if len(dup[key]) == 0 {
+				dup[key] = []Grant{old, g}
+			} else {
+				dup[key] = append(dup[key], g)
+			}
+		} else {
+			ctr[key] = g
+		}
+	}
+
+	for key, grants := range dup {
+		log.Error("%s DUPLICATE allocation entries for container %s", prefix, key)
+		for _, g := range grants {
+			log.Error("%s   %s (%s)", prefix, g, g.GetContainer().GetID())
+		}
+	}
+
+	log.Debug("%s total CPU: %dm (%d+%dm), total memory: %s",
+		prefix, cpu, cpu/1000, cpu%1000, prettyMem(mem))
+
 }
 
 // AllocateResources is a resource allocation request for this policy.
 func (p *policy) AllocateResources(container cache.Container) error {
-	log.Debug("allocating resources for %s...", container.PrettyName())
+	log.Debug("allocating resources for %s (%s)...", container.PrettyName(), container.GetID())
 
 	err := p.allocateResources(container, "")
 	if err != nil {
@@ -168,11 +215,14 @@ func (p *policy) AllocateResources(container cache.Container) error {
 	}
 
 	p.root.Dump("<post-alloc>")
+	p.dumpAllocations("  <post-alloc %s>", container.PrettyName())
 
 	return nil
 }
 
 func (p *policy) allocateResources(container cache.Container, poolHint string) error {
+	p.dumpAllocations("  <pre-alloc %s>", container.PrettyName())
+
 	grant, err := p.allocatePool(container, poolHint)
 	if err != nil {
 		return policyError("failed to allocate resources for %s: %v",
@@ -186,13 +236,14 @@ func (p *policy) allocateResources(container cache.Container, poolHint string) e
 
 // ReleaseResources is a resource release request for this policy.
 func (p *policy) ReleaseResources(container cache.Container) error {
-	log.Debug("releasing resources of %s...", container.PrettyName())
+	log.Debug("releasing resources for %s (%s)...", container.PrettyName(), container.GetID())
 
 	if grant, found := p.releasePool(container); found {
 		p.updateSharedAllocations(&grant)
 	}
 
 	p.root.Dump("<post-release>")
+	p.dumpAllocations("  <post-release %s>", container.PrettyName())
 
 	return nil
 }
@@ -390,7 +441,7 @@ func (p *policy) reallocateResources(containers []cache.Container, pools map[str
 		p.releasePool(c)
 	}
 	for _, c := range containers {
-		log.Debug("reallocating resources for %s...", c.PrettyName())
+		log.Debug("reallocating resources for %s (%s)...", c.PrettyName(), c.GetID())
 
 		grant, err := p.allocatePool(c, pools[c.GetID()])
 		if err != nil {
@@ -448,6 +499,7 @@ func (p *policy) Reconfigure(newCfg interface{}) error {
 	}
 
 	p.root.Dump("<post-config>")
+	p.dumpAllocations("  <post-config>")
 
 	return nil
 }
