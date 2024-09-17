@@ -2,7 +2,7 @@ container-exit0() {
     # Terminate a container by killing the "sleep inf" child process in
     # echo CONTNAME $(sleep inf)
     local contname="$1"
-    vm-command "contpid=\$(ps axf | grep -A1 'echo $contname' | grep -v grep | awk '/_ sleep inf/{print \$1}'); kill -KILL \$contpid"
+    vm-command "contpid=\$(ps axf | grep -A1 'echo $contname' | grep -v grep | tail -n 1 | awk '{print \$1}'); ( set -x; kill -KILL \$contpid; )"
 }
 
 container-signal() {
