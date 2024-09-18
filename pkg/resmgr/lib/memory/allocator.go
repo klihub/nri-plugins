@@ -199,15 +199,26 @@ func (a *Allocator) GetOffer(req *Request) (*Offer, error) {
 // ensure these updates are properly enforced.
 func (a *Allocator) Allocate(req *Request) (NodeMask, map[string]NodeMask, error) {
 	log.Debug("allocate %s memory for %s", req.types, req)
-	defer a.checkState("Allocate")
-	defer a.cleanupUnusedZones()
+	if true {
+		defer a.checkState("Allocate")
+		defer a.cleanupUnusedZones()
 
-	err := a.allocate(req)
-	if err != nil {
-		return 0, nil, err
+		err := a.allocate(req)
+		if err != nil {
+			return 0, nil, err
+		}
+
+		return req.zone, a.commitJournal(req), nil
+
+	} else {
+
+		o, err := a.GetOffer(req)
+		if err != nil {
+			return 0, nil, err
+		}
+
+		return o.Commit()
 	}
-
-	return req.zone, a.commitJournal(req), nil
 }
 
 // Realloc updates an existing allocation with the given extra affinity
@@ -223,7 +234,7 @@ func (a *Allocator) Allocate(req *Request) (NodeMask, map[string]NodeMask, error
 // other existing allocations to fulfill the request. The caller must
 // ensure these updates are properly enforced.
 func (a *Allocator) Realloc(id string, affinity NodeMask, types TypeMask) (NodeMask, map[string]NodeMask, error) {
-	log.Debug("reallocate to add %s memory affine to %s", types, affinity, id)
+	log.Debug("reallocate to add %s memory affine to %s for %s", types, affinity, id)
 
 	req, ok := a.requests[id]
 	if !ok {
@@ -298,11 +309,11 @@ func (a *Allocator) checkState(where string) {
 	}
 
 	for zone, z := range a.zones {
-		for id := range z.users {
+		for id, zReq := range z.users {
 			req, ok := a.requests[id]
 			if !ok {
 				log.Error("internal error: %s: %s present in zone %s, but has no assignment",
-					where, req, zone)
+					where, zReq, zone)
 				continue
 			}
 			if req.Zone() != zone {
@@ -348,11 +359,18 @@ func (a *Allocator) allocate(req *Request) (retErr error) {
 	return nil
 }
 
-func (a *Allocator) realloc(req *Request, nodes NodeMask, types TypeMask) (NodeMask, map[string]NodeMask, error) {
-	var err error
+func (a *Allocator) realloc(req *Request, nodes NodeMask, types TypeMask) (zone NodeMask, updates map[string]NodeMask, retErr error) {
+	var (
+		done bool
+		err  error
+	)
 
-	if nodes, types, err = a.validateRealloc(req, nodes, types); err != nil {
+	if nodes, types, done, err = a.validateRealloc(req, nodes, types); err != nil {
 		return 0, nil, err
+	}
+
+	if done {
+		return req.Zone(), nil, nil
 	}
 
 	log.Debug("reallocate to add %s memory affine to %s for %s", types, nodes, req)
@@ -362,7 +380,9 @@ func (a *Allocator) realloc(req *Request, nodes NodeMask, types TypeMask) (NodeM
 	}
 
 	defer func() {
-		a.revertJournal(req)
+		if retErr != nil {
+			a.revertJournal(nil)
+		}
 	}()
 
 	newNodes, newTypes := a.expand(req.zone|nodes, types)
@@ -435,30 +455,30 @@ func (a *Allocator) validateRequest(req *Request) error {
 	return nil
 }
 
-func (a *Allocator) validateRealloc(req *Request, nodes NodeMask, types TypeMask) (NodeMask, TypeMask, error) {
+func (a *Allocator) validateRealloc(req *Request, nodes NodeMask, types TypeMask) (NodeMask, TypeMask, bool, error) {
 	// neither new nodes nor types requested, nothing to do
 	if nodes == 0 && types == 0 {
-		return 0, 0, nil
+		return 0, 0, true, nil
 	}
 
 	// requested nodes and types are not new, nothing to do
 	if req.affinity == nodes && req.types == types {
-		return 0, 0, nil
+		return nodes, types, true, nil
 	}
 
 	if (req.affinity & a.masks.nodes.all) != req.affinity {
 		unknown := req.affinity &^ a.masks.nodes.all
-		return 0, 0, fmt.Errorf("%w: unknown nodes requested (%s)", ErrInvalidNode, unknown)
+		return 0, 0, false, fmt.Errorf("%w: unknown nodes requested (%s)", ErrInvalidNode, unknown)
 	}
 
 	if (req.types&a.masks.types) != req.types && req.IsStrict() {
 		unavailable := req.types &^ a.masks.types
-		return 0, 0, fmt.Errorf("%w: unavailable types requested (%s)", ErrInvalidType, unavailable)
+		return 0, 0, false, fmt.Errorf("%w: unavailable types requested (%s)", ErrInvalidType, unavailable)
 	}
 
 	// assigned zone already has requested nodes and types, nothing to do
 	if (req.zone&nodes) == nodes && (a.zoneType(req.zone)&types) == types {
-		return 0, 0, nil
+		return nodes, types, true, nil
 	}
 
 	if types == 0 {
@@ -469,7 +489,7 @@ func (a *Allocator) validateRealloc(req *Request, nodes NodeMask, types TypeMask
 		nodes &= a.masks.nodes.byTypes[types]
 	}
 
-	return nodes, types, nil
+	return nodes, types, false, nil
 }
 
 func (a *Allocator) findInitialZone(req *Request) error {
