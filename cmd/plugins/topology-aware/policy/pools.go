@@ -634,62 +634,6 @@ func (p *policy) updateSharedAllocations(grant *Grant) {
 	}
 }
 
-func (p *policy) filterInsufficientResources(req Request, pools []Node) []Node {
-	filtered := make([]Node, 0)
-
-	memNeed := req.MemAmountToAllocate()
-	isolate := req.Isolate()
-	full, fraction := req.FullCPUs(), req.CPUFraction()
-
-	for _, node := range pools {
-		// check pool memory availability
-		memType := req.MemoryType()
-		if memType == memoryUnspec || memType == memoryPreserve {
-			memType = memoryAll
-		}
-
-		memAvail := p.poolZoneFree(node, memType)
-		if memAvail < memNeed {
-			log.Debug("%s has insufficient available %s memory (%s < %s)", node.Name(),
-				memType, prettyMem(memAvail), prettyMem(memNeed))
-			continue
-		}
-
-		log.Debug("%s has enough available %s memory (%s >= %s)", node.Name(),
-			memType, prettyMem(memAvail), prettyMem(memNeed))
-
-		cs := node.FreeSupply()
-
-		// check pool cpu availability
-		isolated := cs.IsolatedCPUs().Size()
-		slicable := cs.AllocatableSharedCPU()
-
-		if isolate {
-			if isolated < full && slicable < 1000*full {
-				log.Debug("%s has insufficient slicable capacity (%dm) for %d isolated CPUs",
-					node.Name(), slicable, full)
-				continue
-			}
-
-			log.Debug("%s has enough slicable capacity (%dm) for %d isolated CPUs",
-				node.Name(), slicable, full)
-		}
-
-		if slicable < 1000*full+fraction {
-			log.Debug("%s has insufficient slicable capacity (%dm) for %d+%dm full+fractional CPU",
-				node.Name(), slicable, full, fraction)
-			continue
-		}
-
-		log.Debug("%s has enough slicable capacity (%dm) for %d+%dm full+fractional CPU",
-			node.Name(), slicable, full, fraction)
-
-		filtered = append(filtered, node)
-	}
-
-	return filtered
-}
-
 // Score pools against the request and sort them by score.
 func (p *policy) sortPoolsByScore(req Request, aff map[int]int32) (map[int]Score, []Node) {
 	scores := make(map[int]Score, p.nodeCnt)
@@ -699,17 +643,14 @@ func (p *policy) sortPoolsByScore(req Request, aff map[int]int32) (map[int]Score
 		return nil
 	})
 
-	// Filter out pools which don't have enough uncompressible resources
-	// (memory) to satisfy the request.
-	//filteredPools := p.filterInsufficientResources(req, p.pools)
-	filteredPools := make([]Node, len(p.pools), len(p.pools))
-	copy(filteredPools, p.pools)
+	pools := make([]Node, len(p.pools), len(p.pools))
+	copy(pools, p.pools)
 
-	sort.Slice(filteredPools, func(i, j int) bool {
-		return p.compareScores(req, filteredPools, scores, aff, i, j)
+	sort.Slice(pools, func(i, j int) bool {
+		return p.compareScores(req, pools, scores, aff, i, j)
 	})
 
-	return scores, filteredPools
+	return scores, pools
 }
 
 // Compare two pools by scores for allocation preference.
