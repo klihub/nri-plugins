@@ -106,8 +106,13 @@ func (a *Allocator) Allocate(req *Request) (CpuMask, map[string]CpuMask, error) 
 	return a.allocate(req, true)
 }
 
-func (a *Allocator) Release(id ID) (map[ID]CpuMask, error) {
-	return nil, nil
+func (a *Allocator) Release(id string) (map[string]CpuMask, error) {
+	req, ok := a.requests[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown allocation %s", ErrUnknownRequest, id)
+	}
+
+	return a.release(req)
 }
 
 func (a *Allocator) newOffer(req *Request, cpus CpuMask, updates map[string]CpuMask) *Offer {
@@ -120,45 +125,84 @@ func (a *Allocator) newOffer(req *Request, cpus CpuMask, updates map[string]CpuM
 }
 
 func (a *Allocator) allocate(req *Request, commit bool) (CpuMask, map[string]CpuMask, error) {
-	req.bounding.And(a.cpus)
-	z := a.GetZone(req.bounding)
+	if _, ok := a.requests[req.ID()]; ok {
+		return nil, nil, fmt.Errorf("%w: request #%s (%s) already exists", ErrAlreadyExists,
+			req.ID(), req.Name())
+	}
+
+	req.pool.And(a.cpus)
+	z := a.GetZone(req.pool)
+
+	log.Debug("allocating from pool %s", req.pool)
 
 	if !a.ZoneHasCapacity(z, req.exclusive, req.shared) {
 		return nil, nil, fmt.Errorf("zone %s does not have free %d+%dm capacity",
 			z.cpus.String(), req.exclusive, req.shared)
 	}
 
-	// if z partially overlaps with another zone, make sure their union exists as a zone
-	for _, oz := range a.zones {
-		if z.IsSubzoneOf(oz) || oz.IsSubzoneOf(z) || z.IsDisjoint(oz) {
-			continue
+	// For each existing zone o, we want to ensure that if z and o partially overlap
+	// we do have the union, z U o, as a zone. This ensures that we'll make a proper
+	// subsequent check to see if z and o has collectively enough resources for both
+	// zones' requests.
+	a.ForeachZone(func(o *Zone) bool {
+		if z.PartialOverlap(o) {
+			_ = a.GetZone(z.cpus.Union(o.cpus))
 		}
-		_ = a.GetZone(z.cpus.Union(oz.cpus))
+		return true
+	})
+
+	z.assign(req)
+
+	overflow := a.checkZoneUsage()
+	if err := overflow.Error(); err != nil {
+		z.unassign(req)
+		return nil, nil, err
 	}
 
-	z.users[req.ID()] = req
-	for _, oz := range a.zones {
-		if a.ZoneSharedCapacity(oz) < 0 {
+	/*
+		z.users[req.ID()] = req
+		overcommit := map[string]int{}
+		a.ForeachZone(func(o *Zone) bool {
+			if free := a.ZoneSharedCapacity(o); free < 0 {
+				overcommit[o.cpus.String()] = free
+			}
+			return true
+		})
+
+		if len(overcommit) > 0 {
 			delete(z.users, req.ID())
-			return nil, nil, fmt.Errorf("zone %s does not have enough free capacity",
-				oz.cpus.String())
+			var err error
+			for cpus, oc := range overcommit {
+				err = fmt.Errorf("%w, %w", err, fmt.Errorf("zone %s lack %dm CPU capacity", cpus, -oc))
+			}
+			return nil, nil, fmt.Errorf("%w: %w", ErrNoCpu, err)
 		}
-	}
+	*/
 
+	/*
+		z.users[req.ID()] = req
+
+		for _, oz := range a.zones {
+			if a.ZoneSharedCapacity(oz) < 0 {
+				delete(z.users, req.ID())
+				return nil, nil, fmt.Errorf("zone %s does not have enough free capacity",
+					oz.cpus.String())
+			}
+		}
+	*/
+
+	updates := make(map[string]CpuMask)
 	isolated := false
+
 	if req.exclusive > 0 {
-		if z.isolated.Size() > req.exclusive {
+		if req.exclusive == 1 && z.isolated.Size() >= 1 {
 			isolated = true
 			req.private, _ = a.picker.PickCpus(z.isolated, req.exclusive, commit)
 		} else {
 			req.private, _ = a.picker.PickCpus(z.shared, req.exclusive, commit)
 		}
-	}
 
-	// generate (and commit if necessary) updates for zones and requests affected
-	updates := make(map[string]CpuMask)
-
-	if req.exclusive > 0 {
+		// generate (and commit if necessary) updates for zones and requests affected
 		for _, oz := range a.zones {
 			if /*z == oz || */ z.IsDisjoint(oz) {
 				continue
@@ -189,7 +233,9 @@ func (a *Allocator) allocate(req *Request, commit bool) (CpuMask, map[string]Cpu
 	}
 
 	if !commit {
-		delete(z.users, req.ID())
+		z.unassign(req)
+	} else {
+		a.requests[req.ID()] = req
 	}
 
 	if len(updates) == 0 {
@@ -197,4 +243,49 @@ func (a *Allocator) allocate(req *Request, commit bool) (CpuMask, map[string]Cpu
 	}
 
 	return req.private.Union(req.common), updates, nil
+}
+
+func (a *Allocator) release(req *Request) (map[string]CpuMask, error) {
+	delete(a.requests, req.ID())
+
+	req.pool.And(a.cpus)
+	z := a.GetZone(req.pool)
+	z.unassign(req)
+
+	if req.private.Size() == 0 {
+		return nil, nil
+	}
+
+	updates := make(map[string]CpuMask)
+
+	// update affected remaining allocations
+	for _, o := range a.zones {
+		if z.IsDisjoint(o) {
+			continue
+		}
+
+		var (
+			cpus     = o.cpus.Intersection(req.private)
+			isolated = cpus.Intersection(a.isolated)
+			normal   = cpus.Difference(isolated)
+		)
+
+		o.isolated.Or(isolated)
+
+		if normal.Size() != 0 {
+			o.shared.Or(normal)
+			for orid, or := range o.users {
+				if or.shared > 0 {
+					or.common = o.shared.Clone()
+					updates[orid] = o.shared.Union(or.private)
+				}
+			}
+		}
+	}
+
+	if len(updates) == 0 {
+		updates = nil
+	}
+
+	return updates, nil
 }

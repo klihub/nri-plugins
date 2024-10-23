@@ -14,6 +14,8 @@
 
 package libcpu
 
+import "fmt"
+
 // Zone is a set of CPUs that can be used to fulfill CPU allocation
 // requests.
 type Zone struct {
@@ -58,7 +60,7 @@ func (a *Allocator) GetZone(cpus CpuMask) *Zone {
 func (a *Allocator) ZoneSharedCapacity(z *Zone) int {
 	capacity := 1000*z.shared.Size() - z.Usage()
 	a.ForeachZone(func(o *Zone) bool {
-		if z != o && !o.IsSubzoneOf(z) {
+		if z != o && o.IsSubzoneOf(z) {
 			capacity -= o.Usage()
 		}
 		return true
@@ -80,12 +82,39 @@ func (a *Allocator) ZoneHasCapacity(z *Zone, exclusive, shared int) bool {
 	return a.ZoneSharedCapacity(z) >= shared
 }
 
-func (z *Zone) IsSubzoneOf(o *Zone) bool {
-	return z.cpus.IsSubsetOf(o.cpus)
+type Overflow map[string]int
+
+func (a *Allocator) checkZoneUsage() Overflow {
+	overflow := make(Overflow)
+
+	a.ForeachZone(func(o *Zone) bool {
+		if free := a.ZoneSharedCapacity(o); free < 0 {
+			overflow[o.cpus.String()] = -free
+			log.Info("*** overflow: %s = %d", o.cpus, -free)
+		}
+		return true
+	})
+
+	return overflow
 }
 
-func (z *Zone) IsDisjoint(o *Zone) bool {
-	return z.cpus.IsDisjoint(o.cpus)
+func (of Overflow) Error() error {
+	if len(of) == 0 {
+		return nil
+	}
+
+	var err error
+
+	for zone, amount := range of {
+		e := fmt.Errorf("zone %s lacks %dm CPU capacity", zone, amount)
+		if err != nil {
+			err = fmt.Errorf("%w, %w", err, e)
+		} else {
+			err = e
+		}
+	}
+
+	return fmt.Errorf("%w: %w", ErrNoCpu, err)
 }
 
 func (z *Zone) Usage() int {
@@ -96,4 +125,24 @@ func (z *Zone) Usage() int {
 	}
 	log.Debug("zone usage(%s): %d", z.cpus, usage)
 	return usage
+}
+
+func (z *Zone) IsSubzoneOf(o *Zone) bool {
+	return z.cpus.IsSubsetOf(o.cpus)
+}
+
+func (z *Zone) IsDisjoint(o *Zone) bool {
+	return z.cpus.IsDisjoint(o.cpus)
+}
+
+func (z *Zone) PartialOverlap(o *Zone) bool {
+	return !z.IsDisjoint(o) && !z.IsSubzoneOf(o) && !o.IsSubzoneOf(z)
+}
+
+func (z *Zone) assign(req *Request) {
+	z.users[req.ID()] = req
+}
+
+func (z *Zone) unassign(req *Request) {
+	delete(z.users, req.ID())
 }

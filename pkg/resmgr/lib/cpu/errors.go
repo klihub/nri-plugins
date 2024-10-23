@@ -17,8 +17,10 @@ package libcpu
 import "errors"
 
 var (
-	ErrFailedSetup    = errors.New("allocator setup failed")
-	ErrInvalidCpuMask = errors.New("invalid cpumask")
-	ErrInvalidRequest = errors.New("invalid request")
-	ErrNoCpus         = errors.New("failed to allocate CPUs")
+	ErrFailedSetup    = errors.New("libcpu: allocator setup failed")
+	ErrInvalidCpuMask = errors.New("libcpu: invalid cpumask")
+	ErrInvalidRequest = errors.New("libcpu: invalid request")
+	ErrAlreadyExists  = errors.New("libcpu: allocation already exists")
+	ErrUnknownRequest = errors.New("libcpu: unknown request")
+	ErrNoCpu          = errors.New("libcpu: insufficient available CPU")
 )

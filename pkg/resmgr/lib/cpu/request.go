@@ -20,7 +20,7 @@ import "fmt"
 type Request struct {
 	id        string  // unique ID for the request, typically a container ID
 	name      string  // an optional, user provided name for the request
-	bounding  CpuMask // bounding set to allocate CPUs from
+	pool      CpuMask // pool of CPUs to allocate from
 	exclusive int     // number of exclusive CPUs to allocate
 	shared    int     // amount of shared CPU to allocate, in milli-CPUs
 	priority  Priority
@@ -36,11 +36,11 @@ const (
 	Reservation Priority = (1 << 15) - 1
 )
 
-func NewRequest(id, name string, bounding CpuMask, exclusive, shared int, prio Priority) *Request {
+func NewRequest(id, name string, pool CpuMask, exclusive, shared int, prio Priority) *Request {
 	return &Request{
 		id:        id,
 		name:      name,
-		bounding:  bounding,
+		pool:      pool,
 		exclusive: exclusive,
 		shared:    shared,
 		priority:  prio,
@@ -67,8 +67,8 @@ func (r *Request) Name() string {
 	}
 }
 
-func (r *Request) Bounding() CpuMask {
-	return r.bounding.Clone()
+func (r *Request) Pool() CpuMask {
+	return r.pool.Clone()
 }
 
 func (r *Request) Exclusive() int {

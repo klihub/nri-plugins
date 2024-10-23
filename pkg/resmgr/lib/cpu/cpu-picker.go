@@ -37,7 +37,7 @@ func WithCpuPicker(p CpuPicker) AllocatorOption {
 }
 
 // WithDefaultCpuPicker returns an option to set up an allocator with the
-// default CPU picker, which uses pkg/cpuallcator.CPUAllocator.
+// default CPU picker, which uses pkg/cpuallocator.CPUAllocator.
 func WithDefaultCpuPicker(sys sysfs.System) AllocatorOption {
 	return WithCpuPicker(NewDefaultCpuPicker(sys))
 }
