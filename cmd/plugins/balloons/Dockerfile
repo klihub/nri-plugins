@@ -9,10 +9,6 @@ ARG DEBUG=0
 
 WORKDIR /go/builder
 
-RUN if [ "$DEBUG" = 1 ]; then \
-        GOBIN=/go/builder/build/bin go install -tags osusergo,netgo -ldflags "-extldflags=-static" github.com/go-delve/delve/cmd/dlv@latest; \
-    fi
-
 # Fetch go dependencies in a separate layer for caching
 COPY go.mod go.sum ./
 COPY pkg/topology/ pkg/topology/
@@ -23,20 +19,23 @@ COPY . .
 
 RUN make clean
 RUN make IMAGE_VERSION=${IMAGE_VERSION} BUILD_VERSION=${BUILD_VERSION} BUILD_BUILDID=${BUILD_BUILDID} PLUGINS=nri-resource-policy-balloons DEBUG=$DEBUG V=$DEBUG build-plugins-static
-RUN if [ "$DEBUG" = 0 ]; then \
-        for d in /go/builder/build/bin/dlv /go/builder/pkg /go/builder/cmd /go/pkg /usr/local/go/src ; do \
-            mv $d $d-dont-copy 2>/dev/null; \
-            touch $d; \
-        done; \
+
+RUN mkdir -p /debug-extras
+RUN if [ "$DEBUG" = 1 ]; then \
+        mkdir -p /debug-extras/bin; \
+          GOBIN=/debug-extras/bin go install -tags osusergo,netgo -ldflags "-extldflags=-static" github.com/go-delve/delve/cmd/dlv@latest; \
+        mkdir -p /debug-extras/go/builder; \
+          mv /go/builder/pkg /debug-extras/go/builder; \
+          mv /go/builder/cmd /debug-extras/go/builder; \
+        mkdir -p /debug-extras/usr/local/go; \
+          mv /go/pkg /debug-extras/go/pkg; \
+        mkdir -p /debug-extras/usr/local/go; \
+          mv /usr/local/go/src /debug-extras/usr/local/go; \
     fi
 
 FROM gcr.io/distroless/static
 
 COPY --from=builder /go/builder/build/bin/nri-resource-policy-balloons /bin/nri-resource-policy-balloons
-COPY --from=builder /go/builder/build/bin/dlv /bin/dlv
-COPY --from=builder /go/builder/pkg /go/builder/pkg
-COPY --from=builder /go/builder/cmd /go/builder/cmd
-COPY --from=builder /go/pkg /go/pkg
-COPY --from=builder /usr/local/go/src /usr/local/go/src
+COPY --from=builder /debug-extras /
 
 ENTRYPOINT ["/bin/nri-resource-policy-balloons"]
