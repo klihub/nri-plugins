@@ -119,12 +119,36 @@ spec:
                       to expose Prometheus metrics among other things.
                     example: :8891
                     type: string
+                  metrics:
+                    default:
+                      polled:
+                      - policy
+                    description: Metrics defines which metrics to collect.
+                    properties:
+                      enabled:
+                        description: Enabled enables collection for metrics matched
+                          by glob patterns.
+                        example:
+                        - '*'
+                        items:
+                          type: string
+                        type: array
+                      polled:
+                        description: Polled enabled polled collection for metrics
+                          matched by glob patterns.
+                        example:
+                        - policy
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   prometheusExport:
                     description: PrometheusExport enables exporting /metrics for Prometheus.
                     type: boolean
                   reportPeriod:
-                    description: ReportPeriod is the interval between reporting aggregated
-                      metrics.
+                    default: 30s
+                    description: ReportPeriod is the interval between between collecting
+                      polled metrics.
                     format: duration
                     type: string
                   samplingRatePerMillion:
