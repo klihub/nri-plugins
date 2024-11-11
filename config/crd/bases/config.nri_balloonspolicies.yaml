@@ -322,6 +322,8 @@ spec:
                     type: string
                   metrics:
                     default:
+                      enabled:
+                      - standard/buildinfo
                       polled:
                       - policy
                     description: Metrics defines which metrics to collect.
