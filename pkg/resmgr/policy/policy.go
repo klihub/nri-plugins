@@ -204,6 +204,7 @@ type policy struct {
 	system    system.System    // system/HW/topology info
 	sendEvent SendEventFn      // function to send event up to the resource manager
 	pcollect  *PolicyCollector // policy metrics collector
+	scollect  *SystemCollector // system metrics collector
 }
 
 // backend is a registered Backend.
@@ -226,11 +227,23 @@ func NewPolicy(backend Backend, cache cache.Cache, o *Options) (Policy, error) {
 		active:  backend,
 	}
 
-	pcollect := NewPolicyCollector(p)
-	if err := pcollect.Register(); err != nil {
+	sys, err := system.DiscoverSystem()
+	if err != nil {
+		return nil, policyError("failed to discover system topology: %v", err)
+	}
+	p.system = sys
+
+	pcollect := p.newPolicyCollector()
+	if err := pcollect.register(); err != nil {
 		return nil, policyError("failed to register policy collector: %v", err)
 	}
 	p.pcollect = pcollect
+
+	scollect := p.newSystemCollector()
+	if err = scollect.register(); err != nil {
+		return nil, policyError("failed to register system collector: %v", err)
+	}
+	p.scollect = scollect
 
 	return p, nil
 }
@@ -244,12 +257,6 @@ func (p *policy) ActivePolicy() string {
 
 // Start starts up policy, preparing it for serving requests.
 func (p *policy) Start(cfg interface{}) error {
-	sys, err := system.DiscoverSystem()
-	if err != nil {
-		return policyError("failed to discover system topology: %v", err)
-	}
-	p.system = sys
-
 	log.Info("activating '%s' policy...", p.active.Name())
 
 	if err := p.active.Setup(&BackendOptions{

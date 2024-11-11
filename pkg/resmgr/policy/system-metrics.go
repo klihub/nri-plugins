@@ -35,7 +35,7 @@ const (
 )
 
 type (
-	SystemMetrics struct {
+	SystemCollector struct {
 		cache   cache.Cache
 		system  system.System
 		Nodes   map[int]*NodeMetric
@@ -58,8 +58,8 @@ type (
 	}
 )
 
-func (p *policy) NewSystemMetrics() *SystemMetrics {
-	s := &SystemMetrics{
+func (p *policy) newSystemCollector() *SystemCollector {
+	s := &SystemCollector{
 		cache:   p.cache,
 		system:  p.system,
 		Nodes:   map[int]*NodeMetric{},
@@ -139,7 +139,7 @@ func (p *policy) NewSystemMetrics() *SystemMetrics {
 	return s
 }
 
-func (s *SystemMetrics) Describe(ch chan<- *prometheus.Desc) {
+func (s *SystemCollector) Describe(ch chan<- *prometheus.Desc) {
 	s.Metrics[nodeCapacity].Describe(ch)
 	s.Metrics[nodeUsage].Describe(ch)
 	s.Metrics[nodeContainers].Describe(ch)
@@ -147,7 +147,7 @@ func (s *SystemMetrics) Describe(ch chan<- *prometheus.Desc) {
 	s.Metrics[cpuContainers].Describe(ch)
 }
 
-func (s *SystemMetrics) Collect(ch chan<- prometheus.Metric) {
+func (s *SystemCollector) Collect(ch chan<- prometheus.Metric) {
 	s.Update()
 	s.Metrics[nodeCapacity].Collect(ch)
 	s.Metrics[nodeUsage].Collect(ch)
@@ -156,11 +156,11 @@ func (s *SystemMetrics) Collect(ch chan<- prometheus.Metric) {
 	s.Metrics[cpuContainers].Collect(ch)
 }
 
-func (s *SystemMetrics) Register() error {
+func (s *SystemCollector) register() error {
 	return metrics.Register("system", s, metrics.WithGroup("policy"))
 }
 
-func (s *SystemMetrics) Update() {
+func (s *SystemCollector) Update() {
 	for _, n := range s.Nodes {
 		sys := s.system.Node(n.Id)
 		capa, used := s.getMemInfo(sys)
@@ -216,7 +216,7 @@ func (s *SystemMetrics) Update() {
 	}
 }
 
-func (s *SystemMetrics) getMemInfo(n system.Node) (capacity, used int64) {
+func (s *SystemCollector) getMemInfo(n system.Node) (capacity, used int64) {
 	if n != nil {
 		if i, _ := n.MemoryInfo(); i != nil {
 			return int64(i.MemTotal), int64(i.MemUsed)
@@ -225,13 +225,13 @@ func (s *SystemMetrics) getMemInfo(n system.Node) (capacity, used int64) {
 	return 0, 0
 }
 
-func (s *SystemMetrics) getCpuAndMemset(ctr cache.Container) (cpu, mem cpuset.CPUSet) {
+func (s *SystemCollector) getCpuAndMemset(ctr cache.Container) (cpu, mem cpuset.CPUSet) {
 	cset, _ := cpuset.Parse(ctr.GetCpusetCpus())
 	mset, _ := cpuset.Parse(ctr.GetCpusetMems())
 	return cset, mset
 }
 
-func (s *SystemMetrics) getCpuResources(ctr cache.Container) (request, limit int) {
+func (s *SystemCollector) getCpuResources(ctr cache.Container) (request, limit int) {
 	res := ctr.GetResourceRequirements()
 	if qty, ok := res.Requests[v1.ResourceCPU]; ok {
 		request = int(qty.MilliValue())
