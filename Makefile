@@ -108,6 +108,7 @@ ifeq ($(DEBUG),1)
     DOCKER_BUILD_DEBUG := --build-arg DEBUG=1
   ifneq ($(NORACE),1)
     BUILD_FLAGS += -race
+    DOCKER_BUILD_RACE := --build-arg RACE=1
   endif
 endif
 
