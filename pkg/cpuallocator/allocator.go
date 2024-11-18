@@ -41,6 +41,10 @@ const (
 	// AllocIdleCores requests allocation of full idle cores (all threads in core).
 	AllocIdleCores
 
+	// PreferPartialSharedGroups prefers using shared groups over splitting up idle
+	// groups for partial allocation.
+	PreferPartialSharedGroups
+
 	// AllocDefault is the default allocation preferences.
 	AllocDefault = AllocIdlePackages | AllocIdleClusters | AllocCacheGroups | AllocIdleCores
 
@@ -762,6 +766,11 @@ func (a *allocatorHelper) takeCacheGroups() {
 			continue
 		}
 
+		// if we have usable/non-idle groups and they are preferred, move on to them instead
+		if a.flags&PreferPartialSharedGroups != 0 && sorter.usableCPUCount() >= cnt {
+			break
+		}
+
 		// partially allocate the rest from this group
 		ta := newAllocatorHelper(a.sys, a.topology)
 		ta.prefer = a.prefer
@@ -1249,6 +1258,14 @@ func (s *cacheGroupSorter) usablePkgCPUCount(pkg idset.ID) int {
 
 func (s *cacheGroupSorter) usableDieCPUCount(pkg, die idset.ID) int {
 	return s.usableDie[pkg][die]
+}
+
+func (s *cacheGroupSorter) usableCPUCount() int {
+	cnt := 0
+	for _, g := range s.usable {
+		cnt += s.cpus[g].Size()
+	}
+	return cnt
 }
 
 func (s *cacheGroupSorter) CPUSet(g *cacheGroup) cpuset.CPUSet {
