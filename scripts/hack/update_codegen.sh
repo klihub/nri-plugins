@@ -26,7 +26,7 @@ popd > /dev/null
 # shellcheck source=/dev/null
 source "${CODEGEN_PKG}/kube_codegen.sh"
 
-cd "${REPO_ROOT}/pkg/apis"
+#cd "${REPO_ROOT}/pkg/apis"
 
 kube::codegen::gen_client \
     --output-dir "${REPO_ROOT}/pkg/generated" \
