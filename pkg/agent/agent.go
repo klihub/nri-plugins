@@ -262,6 +262,77 @@ func (a *Agent) Stop() {
 	}
 }
 
+var (
+	defaultConfig = &cfgapi.AgentConfig{
+		PodResourceAPI:       false,
+		NodeResourceTopology: true,
+	}
+)
+
+func getAgentConfig(newConfig metav1.Object) *cfgapi.AgentConfig {
+	cfg := cfgapi.GetAgentConfig(newConfig)
+	if cfg == nil {
+		return defaultConfig
+	}
+	return cfg
+}
+
+func (a *Agent) configure(newConfig metav1.Object) error {
+	if a.hasLocalConfig() {
+		log.Warn("running with local configuration, skipping cluster access client setup...")
+		return nil
+	}
+
+	cfg := getAgentConfig(newConfig)
+
+	// We always need a HTTP/REST client and a K8s client.
+	if a.httpCli == nil {
+		log.Info("setting up HTTP/REST client...")
+		restCfg, err := a.getRESTConfig()
+		if err != nil {
+			return err
+		}
+
+		a.httpCli, err = rest.HTTPClientFor(restCfg)
+		if err != nil {
+			return fmt.Errorf("failed to setup kubernetes HTTP client: %w", err)
+		}
+
+		log.Info("setting up K8s client...")
+		a.k8sCli, err = k8sclient.NewForConfigAndClient(restCfg, a.httpCli)
+		if err != nil {
+			a.cleanupClients()
+			return fmt.Errorf("failed to setup kubernetes client: %w", err)
+		}
+
+		kubeCfg := *restCfg
+		err = a.cfgIf.SetKubeClient(a.httpCli, &kubeCfg)
+		if err != nil {
+			return fmt.Errorf("failed to setup kubernetes config resource client: %w", err)
+		}
+	}
+
+	switch {
+	case cfg.NodeResourceTopology && a.nrtCli == nil:
+		log.Info("enabling NRT client")
+		cfg, err := a.getRESTConfig()
+		if err != nil {
+			return err
+		}
+		cli, err := nrtapi.NewForConfigAndClient(cfg, a.httpCli)
+		if err != nil {
+			return fmt.Errorf("failed to setup NRT client: %w", err)
+		}
+		a.nrtCli = cli
+
+	case !cfg.NodeResourceTopology && a.nrtCli != nil:
+		log.Info("disabling NRT client")
+		a.nrtCli = nil
+	}
+
+	return nil
+}
+
 func (a *Agent) hasLocalConfig() bool {
 	return a.configFile != ""
 }
@@ -271,33 +342,8 @@ func (a *Agent) setupClients() error {
 		return nil
 	}
 
-	cfg, err := a.getRESTConfig()
-	if err != nil {
-		return err
-	}
-
-	a.httpCli, err = rest.HTTPClientFor(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to setup kubernetes HTTP client: %w", err)
-	}
-
-	a.k8sCli, err = k8sclient.NewForConfigAndClient(cfg, a.httpCli)
-	if err != nil {
-		a.cleanupClients()
-		return fmt.Errorf("failed to setup kubernetes client: %w", err)
-	}
-
-	restCfg := *cfg
-	a.nrtCli, err = nrtapi.NewForConfigAndClient(&restCfg, a.httpCli)
-	if err != nil {
-		a.cleanupClients()
-		return fmt.Errorf("failed to setup NRT client: %w", err)
-	}
-
-	restCfg = *cfg
-	err = a.cfgIf.SetKubeClient(a.httpCli, &restCfg)
-	if err != nil {
-		return fmt.Errorf("failed to setup kubernetes config resource client: %w", err)
+	if err := a.configure(a.currentCfg); err != nil {
+		return fmt.Errorf("failed set up clients: %w", err)
 	}
 
 	return nil
@@ -556,6 +602,10 @@ func (a *Agent) updateConfig(cfg metav1.Object) {
 	}
 
 	a.currentCfg = cfg
+
+	if err := a.configure(cfg); err != nil {
+		log.Warn("failed to reconfigure agent: %v", err)
+	}
 }
 
 func (a *Agent) patchConfigStatus(prev, curr metav1.Object, errors error) {
