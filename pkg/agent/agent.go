@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	nrtapi "github.com/containers/nri-plugins/pkg/agent/nrtapi"
+	"github.com/containers/nri-plugins/pkg/agent/podresapi"
 	"github.com/containers/nri-plugins/pkg/agent/watch"
 	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1"
 	k8sclient "k8s.io/client-go/kubernetes"
@@ -126,11 +127,12 @@ type Agent struct {
 	kubeConfig string // kubeconfig path
 	configFile string // configuration file to use instead of custom resource
 
-	cfgIf   ConfigInterface      // custom resource access interface
-	httpCli *http.Client         // shared HTTP client
-	k8sCli  *k8sclient.Clientset // kubernetes client
-	nrtCli  *nrtapi.Client       // NRT custom resources client
-	nrtLock sync.Mutex           // serialize NRT custom resource updates
+	cfgIf     ConfigInterface      // custom resource access interface
+	httpCli   *http.Client         // shared HTTP client
+	k8sCli    *k8sclient.Clientset // kubernetes client
+	nrtCli    *nrtapi.Client       // NRT custom resources client
+	nrtLock   sync.Mutex           // serialize NRT custom resource updates
+	podResCli *podresapi.Client    // pod resources API client
 
 	notifyFn      NotifyFn        // config resource change notification callback
 	nodeWatch     watch.Interface // kubernetes node watch
@@ -310,6 +312,20 @@ func (a *Agent) configure(newConfig metav1.Object) error {
 		if err != nil {
 			return fmt.Errorf("failed to setup kubernetes config resource client: %w", err)
 		}
+	}
+
+	switch {
+	case cfg.PodResourceAPI && a.podResCli == nil:
+		log.Info("enabling PodResourceAPI client")
+		cli, err := podresapi.NewClient()
+		if err != nil {
+			return err
+		}
+		a.podResCli = cli
+	case !cfg.PodResourceAPI && a.podResCli != nil:
+		log.Info("disabling PodResourceAPI client")
+		a.podResCli.Close()
+		a.podResCli = nil
 	}
 
 	switch {
