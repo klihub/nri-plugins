@@ -4,7 +4,7 @@
   <meta charset="utf-8" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Balloons Policy &mdash; NRI Plugins v0.7.1 documentation</title>
+  <title>Balloons Policy &mdash; NRI Plugins v0.7.1-126-g5fb185a3 documentation</title>
       <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
       <link rel="stylesheet" href="../../../_static/css/theme.css" type="text/css" />
   <!--[if lt IE 9]>
@@ -61,7 +61,7 @@
 <li class="toctree-l4"><a class="reference internal" href="#deployment">Deployment</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#configuration">Configuration</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#assigning-a-container-to-a-balloon">Assigning a Container to a Balloon</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#disabling-cpu-or-memory-pinning-of-a-container">Disabling CPU or Memory Pinning of a Container</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#pod-and-container-overrides-to-cpu-and-memory-pinning">Pod and Container Overrides to CPU and Memory Pinning</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#metrics-and-debugging">Metrics and Debugging</a></li>
 </ul>
 </li>
@@ -191,6 +191,27 @@ using memory only from the closest NUMA nodes. Warning: this may
 cause kernel to kill containers due to out-of-memory error when
 closest NUMA nodes do not have enough memory. In this situation
 consider switching this option <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">preserve</span></code> specifies containers whose resource pinning must not be
+modified by the policy.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">matchExpressions</span></code> if a container matches an expression in this
+list, the policy will preserve container’s resource pinning. If
+there is no resource pinning, the policy will not change that
+either. Example: preserve containers named “a” and “b”. As a
+result, the policy will not modify CPU or memory pinning of
+matching containers.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ignore</span><span class="p">:</span>
+  <span class="n">matchExpressions</span><span class="p">:</span>
+    <span class="o">-</span> <span class="n">key</span><span class="p">:</span> <span class="n">name</span>
+      <span class="n">operator</span><span class="p">:</span> <span class="n">In</span>
+      <span class="n">values</span><span class="p">:</span>
+        <span class="o">-</span> <span class="n">a</span>
+        <span class="o">-</span> <span class="n">b</span>
+</pre></div>
+</div>
+</li>
+</ul>
+</li>
 <li><p><code class="docutils literal notranslate"><span class="pre">idleCPUClass</span></code> specifies the CPU class of those CPUs that do not
 belong to any balloon.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">reservedPoolNamespaces</span></code> is a list of namespaces (wildcards allowed)
@@ -264,6 +285,10 @@ request less.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">cpuClass</span></code> specifies the name of the CPU class according to which
 CPUs of balloons are configured. Class properties are defined in
 separate <code class="docutils literal notranslate"><span class="pre">cpu.classes</span></code> objects, see below.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">memoryTypes</span></code> is a list of allowed memory types for containers in
+a balloon. Supported types are “HBM”, “DRAM” and “PMEM”. This
+setting can be overridden by a pod/container specific
+<code class="docutils literal notranslate"><span class="pre">memory-type</span></code> annotation.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">preferCloseToDevices</span></code>: prefer creating new balloons close to
 listed devices. List of strings</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">preferCoreType</span></code>:  specifies preferences of the core type which
@@ -275,7 +300,7 @@ is <code class="docutils literal notranslate"><span class="pre">false</span></co
 balloon(s).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">preferPerNamespaceBalloon</span></code>: if <code class="docutils literal notranslate"><span class="pre">true</span></code>, containers in the same
 namespace will be placed in the same balloon(s). On the other
-hand, containers in different namespaces are preferrably placed in
+hand, containers in different namespaces are preferably placed in
 different balloons. The default is <code class="docutils literal notranslate"><span class="pre">false</span></code>: namespace has no
 effect on choosing the balloon of this type.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">preferNewBalloons</span></code>: if <code class="docutils literal notranslate"><span class="pre">true</span></code>, prefer creating new balloons over
@@ -303,6 +328,8 @@ anywhere in the system.</p></li>
 (sockets) as the balloon.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">die</span></code>: …in the same die(s) as the balloon.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">numa</span></code>: …in the same numa node(s) as the balloon.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">l2cache</span></code>: …allowed to use idle CPUs that share the same level
+2 cache as the balloon.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">core</span></code>: …allowed to use idle CPU threads in the same cores with
 the balloon.</p></li>
 </ul>
@@ -360,7 +387,7 @@ class (kHz).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">prometheusExport</span></code>: if set to True, balloons with their CPUs
 and assigned containers are readable through <code class="docutils literal notranslate"><span class="pre">/metrics</span></code> from the
 httpEndpoint.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">reportPeriod</span></code>: <code class="docutils literal notranslate"><span class="pre">/metrics</span></code> aggregation interval.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">reportPeriod</span></code>: <code class="docutils literal notranslate"><span class="pre">/metrics</span></code> aggregation interval for polled metrics.</p></li>
 </ul>
 </li>
 </ul>
@@ -369,7 +396,7 @@ httpEndpoint.</p></li>
 <h3>Example<a class="headerlink" href="#example" title="Permalink to this heading"></a></h3>
 <p>Example configuration that runs all pods in balloons of 1-4
 CPUs. Instrumentation enables reading CPUs and containers in balloons
-from <code class="docutils literal notranslate"><span class="pre">http://localhost:8891/metrics</span></code>.</p>
+from <code class="docutils literal notranslate"><span class="pre">http://$localhost_or_pod_IP:8891/metrics</span></code>.</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">config.nri/v1alpha1</span>
 <span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">BalloonsPolicy</span>
 <span class="nt">metadata</span><span class="p">:</span>
@@ -429,11 +456,19 @@ assigned to the <code class="docutils literal notranslate"><span class="pre">def
 type can be defined explicitly among other balloon types. If they are
 not defined, a built-in <code class="docutils literal notranslate"><span class="pre">default</span></code> balloon type is used.</p>
 </section>
+<section id="pod-and-container-overrides-to-cpu-and-memory-pinning">
+<h2>Pod and Container Overrides to CPU and Memory Pinning<a class="headerlink" href="#pod-and-container-overrides-to-cpu-and-memory-pinning" title="Permalink to this heading"></a></h2>
 <section id="disabling-cpu-or-memory-pinning-of-a-container">
-<h2>Disabling CPU or Memory Pinning of a Container<a class="headerlink" href="#disabling-cpu-or-memory-pinning-of-a-container" title="Permalink to this heading"></a></h2>
+<h3>Disabling CPU or Memory Pinning of a Container<a class="headerlink" href="#disabling-cpu-or-memory-pinning-of-a-container" title="Permalink to this heading"></a></h3>
 <p>Some containers may need to run on all CPUs or access all memories
-without restrictions. Annotate these pods and containers to prevent
-the resource policy from touching their CPU or memory pinning.</p>
+without restrictions. There are two alternatives to achieve this:
+policy configuration and pod annotations.</p>
+<p>The resource policy will not touch allowed resources of containers
+that match <code class="docutils literal notranslate"><span class="pre">preserve</span></code> criteria. See policy configuration options
+above.</p>
+<p>Alternatively, pod annotations can opt-out all or selected containers
+in the pod from CPU or memory pinning by preserving whatever existing
+or non-existing pinning configuration:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">cpu.preserve.resource-policy.nri.io/container.CONTAINER_NAME</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;true&quot;</span>
 <span class="nt">cpu.preserve.resource-policy.nri.io/pod</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;true&quot;</span>
 <span class="nt">cpu.preserve.resource-policy.nri.io</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;true&quot;</span>
@@ -443,6 +478,7 @@ the resource policy from touching their CPU or memory pinning.</p>
 <span class="nt">memory.preserve.resource-policy.nri.io</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;true&quot;</span>
 </pre></div>
 </div>
+</section>
 <section id="selectively-disabling-hyperthreading">
 <h3>Selectively Disabling Hyperthreading<a class="headerlink" href="#selectively-disabling-hyperthreading" title="Permalink to this heading"></a></h3>
 <p>If a container opts to hide hyperthreads, it is allowed to use only
@@ -463,6 +499,25 @@ hidden hyperthreads either.</p>
 <code class="docutils literal notranslate"><span class="pre">hideHyperthreads</span></code> balloon type parameter value for selected
 containers in the pod.</p>
 </section>
+<section id="memory-type">
+<h3>Memory Type<a class="headerlink" href="#memory-type" title="Permalink to this heading"></a></h3>
+<p>If a container must be pinned to specific memory types that may differ
+from its balloon’s <code class="docutils literal notranslate"><span class="pre">memoryTypes</span></code>, container-specific types can be
+given in the <code class="docutils literal notranslate"><span class="pre">memory-type</span></code> pod annotations:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">memory-type.resource-policy.nri.io/container.CONTAINER_NAME</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;COMMA-SEPARATED-TYPES&gt;</span>
+<span class="nt">memory-type.resource-policy.nri.io/pod</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;COMMA-SEPARATED-TYPES&gt;</span>
+<span class="nt">memory-type.resource-policy.nri.io</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;COMMA-SEPARATED-TYPES&gt;</span>
+</pre></div>
+</div>
+<p>The first sets the memory type for a single container in the pod, the
+latter two for other containers in the pod. Supported types are “HBM”,
+“DRAM” and “PMEM”. Example:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">annotations</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">memory-type.resource-policy.nri.io/container.LLM</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HBM,DRAM</span>
+</pre></div>
+</div>
+</section>
 </section>
 <section id="metrics-and-debugging">
 <h2>Metrics and Debugging<a class="headerlink" href="#metrics-and-debugging" title="Permalink to this heading"></a></h2>
@@ -472,9 +527,12 @@ nri-resource-policy global config:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">instrumentation</span><span class="p">:</span>
 <span class="w">  </span><span class="c1"># The balloons policy exports containers running in each balloon,</span>
 <span class="w">  </span><span class="c1"># and cpusets of balloons. Accessible in command line:</span>
-<span class="w">  </span><span class="c1"># curl --silent http://localhost:8891/metrics</span>
+<span class="w">  </span><span class="c1"># curl --silent http://$localhost_or_pod_IP:8891/metrics</span>
 <span class="w">  </span><span class="nt">HTTPEndpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">:8891</span>
 <span class="w">  </span><span class="nt">PrometheusExport</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">  </span><span class="nt">metrics</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="c1"># use &#39;*&#39; instead for all available metrics</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">policy</span>
 <span class="nt">logger</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">Debug</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">policy</span>
 </pre></div>

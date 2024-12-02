@@ -4,7 +4,7 @@
   <meta charset="utf-8" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Topology-Aware Policy &mdash; NRI Plugins v0.7.1 documentation</title>
+  <title>Topology-Aware Policy &mdash; NRI Plugins v0.7.1-126-g5fb185a3 documentation</title>
       <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
       <link rel="stylesheet" href="../../../_static/css/theme.css" type="text/css" />
   <!--[if lt IE 9]>
@@ -66,8 +66,10 @@
 <li class="toctree-l4"><a class="reference internal" href="#container-memory-requests-and-limits">Container memory requests and limits</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#reserved-pool-namespaces">Reserved pool namespaces</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#reserved-cpu-annotations">Reserved CPU annotations</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#allowing-or-denying-mount-device-paths-via-annotations">Allowing or denying mount/device paths via annotations</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#controlling-topology-hints-via-annotations">Controlling Topology Hints Via Annotations</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#using-pod-resource-api-for-extra-topology-hints">Using Pod Resource API for Extra Topology Hints</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#container-affinity-and-anti-affinity">Container Affinity and Anti-Affinity</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#metrics-and-debugging">Metrics and Debugging</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="balloons.html">Balloons Policy</a></li>
@@ -280,7 +282,7 @@ would be otherwise eligible for exclusive CPU allocation</p></li>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">reservedPoolNamespaces</span></code></p>
 <ul>
-<li><p>list of extra namespaces (or glob patters) that will be allocated to
+<li><p>list of extra namespaces (or glob patterns) that will be allocated to
 reserved CPUs</p></li>
 </ul>
 </li>
@@ -303,6 +305,19 @@ annotated with any other CPU preferences. The possible values are: <code class="
 <code class="docutils literal notranslate"><span class="pre">normal</span></code>, <code class="docutils literal notranslate"><span class="pre">low</span></code>, and <code class="docutils literal notranslate"><span class="pre">none</span></code>. Currently this option only affects exclusive
 CPU allocations. For a more detailed discussion of CPU prioritization see
 the <a class="reference internal" href="../developers-guide/cpu-allocator.html"><span class="std std-doc">cpu allocator</span></a> documentation.</p></li>
+</ul>
+</li>
+</ul>
+<p>Additionally, the following sub-configuration is available for instrumentation:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">instrumentation</span></code>: configures runtime instrumentation.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">httpEndpoint</span></code>: the address the HTTP server listens on. Example:
+<code class="docutils literal notranslate"><span class="pre">:8891</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">prometheusExport</span></code>: if set to True, metrics about system and topology zone
+resource assignment are readable through <code class="docutils literal notranslate"><span class="pre">/metrics</span></code> from the configured
+<code class="docutils literal notranslate"><span class="pre">httpEndpoint</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">reportPeriod</span></code>: <code class="docutils literal notranslate"><span class="pre">/metrics</span></code> aggregation interval for polled metrics.</p></li>
 </ul>
 </li>
 </ul>
@@ -605,8 +620,8 @@ the ReservedResources configuration option in the policy section.</p>
 </pre></div>
 </div>
 </section>
-<section id="allowing-or-denying-mount-device-paths-via-annotations">
-<h2>Allowing or denying mount/device paths via annotations<a class="headerlink" href="#allowing-or-denying-mount-device-paths-via-annotations" title="Permalink to this heading"></a></h2>
+<section id="controlling-topology-hints-via-annotations">
+<h2>Controlling Topology Hints Via Annotations<a class="headerlink" href="#controlling-topology-hints-via-annotations" title="Permalink to this heading"></a></h2>
 <p>User is able mark certain pods and containers to have allowed or denied
 paths for mounts or devices. What this means is that when the system
 is generating topology hints, it will consult this allowed / denied path
@@ -646,6 +661,15 @@ put wildcards to the matched paths.</p>
 </pre></div>
 </div>
 </section>
+<section id="using-pod-resource-api-for-extra-topology-hints">
+<h2>Using Pod Resource API for Extra Topology Hints<a class="headerlink" href="#using-pod-resource-api-for-extra-topology-hints" title="Permalink to this heading"></a></h2>
+<p>If access to the <code class="docutils literal notranslate"><span class="pre">kubelet</span></code>’s <code class="docutils literal notranslate"><span class="pre">Pod</span> <span class="pre">Resource</span> <span class="pre">API</span></code> is enabled in the
+<a class="reference internal" href="../developers-guide/architecture.html#node-agent"><span class="std std-ref">Node Agent’s</span></a> configuration,
+it is automatically used to generate per-container topology hints when a
+device with locality to a NUMA node is advertised by the API. Annotated allow
+and deny lists can be used to selective disable or enable per-resource hints,
+using <code class="docutils literal notranslate"><span class="pre">podresapi:$RESOURCE_NAME</span></code> as the path.</p>
+</section>
 <section id="container-affinity-and-anti-affinity">
 <h2>Container Affinity and Anti-Affinity<a class="headerlink" href="#container-affinity-and-anti-affinity" title="Permalink to this heading"></a></h2>
 <section id="introduction">
@@ -665,7 +689,7 @@ However as a general rule of thumb containers running</p>
 <p>These hints are expressed by <code class="docutils literal notranslate"><span class="pre">container</span> <span class="pre">affinity</span> <span class="pre">annotations</span></code> on the Pod.
 There are two types of affinities:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">affinity</span></code> (or <code class="docutils literal notranslate"><span class="pre">positive</span> <span class="pre">affinty</span></code>): cause affected containers to <em>pull</em> each
+<li><p><code class="docutils literal notranslate"><span class="pre">affinity</span></code> (or <code class="docutils literal notranslate"><span class="pre">positive</span> <span class="pre">affinity</span></code>): cause affected containers to <em>pull</em> each
 other closer</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">anti-affinity</span></code> (or <code class="docutils literal notranslate"><span class="pre">negative</span> <span class="pre">affinity</span></code>): cause affected containers to <em>push</em>
 each other further away</p></li>
@@ -684,7 +708,7 @@ annotation. They are specified in the <code class="docutils literal notranslate"
 <code class="docutils literal notranslate"><span class="pre">annotations</span></code> as a dictionary, with each dictionary key being the name of the
 <em>container</em> within the Pod to which the annotation belongs to.</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">metadata</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">anotations</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">annotations</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">resource-policy.nri.io/affinity</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
 <span class="w">      </span><span class="no">container1:</span>
 <span class="w">        </span><span class="no">- scope:</span>
@@ -707,7 +731,7 @@ annotation. They are specified in the <code class="docutils literal notranslate"
 <p>An anti-affinity is defined similarly but using <code class="docutils literal notranslate"><span class="pre">resource-policy.nri.io/anti-affinity</span></code>
 as the annotation key.</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">metadata</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">anotations</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">annotations</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">resource-policy.nri.io/anti-affinity</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
 <span class="w">      </span><span class="no">container1:</span>
 <span class="w">        </span><span class="no">- scope:</span>
@@ -751,7 +775,7 @@ is. This is useful in situations where the policy needs to make some
 compromises because an optimal placement is not possible. The weight then also
 acts as a way to specify preferences of priorities between the various
 compromises: the heavier the weight the stronger the pull or push and the
-larger the propbability that it will be honored, if this is possible at all.</p>
+larger the probability that it will be honored, if this is possible at all.</p>
 <p>The scope can be omitted from an affinity in which case it implies <em>Pod scope</em>,
 in other words the scope of all containers that belong to the same Pod as the
 container for which which the affinity is defined.</p>
@@ -924,6 +948,25 @@ one needs to give just the names of the containers, like in the example below.</
 </div>
 <!-- Links -->
 </section>
+</section>
+<section id="metrics-and-debugging">
+<h2>Metrics and Debugging<a class="headerlink" href="#metrics-and-debugging" title="Permalink to this heading"></a></h2>
+<p>In order to enable more verbose logging and metrics exporting from the
+topology-aware policy, enable instrumentation and policy debugging from
+the nri-resource-policy global config:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">instrumentation</span><span class="p">:</span>
+<span class="w">  </span><span class="c1"># The topology-aware policy can exports various system and topology</span>
+<span class="w">  </span><span class="c1"># zone utilisation metrics. Accessible in command line with</span>
+<span class="w">  </span><span class="c1"># curl --silent http://$localhost_or_pod_IP:8891/metrics</span>
+<span class="w">  </span><span class="nt">HTTPEndpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">:8891</span>
+<span class="w">  </span><span class="nt">PrometheusExport</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">  </span><span class="nt">metrics</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="c1"># use &#39;*&#39; instead for all available metrics</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">policy</span>
+<span class="nt">logger</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">Debug</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">policy</span>
+</pre></div>
+</div>
 </section>
 </section>
 
