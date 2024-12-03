@@ -492,7 +492,7 @@ If access to the `kubelet`'s `Pod Resource API` is enabled in the
 [Node Agent's](../developers-guide/architecture.md#node-agent) configuration,
 it is automatically used to generate per-container topology hints when a
 device with locality to a NUMA node is advertised by the API. Annotated allow
-and deny lists can be used to selective disable or enable per-resource hints,
+and deny lists can be used to selectively disable or enable per-resource hints,
 using `podresapi:$RESOURCE_NAME` as the path.
 
 
