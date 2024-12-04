@@ -47,6 +47,8 @@ const (
 	keyCpuPriorityPreference = "prefer-cpu-priority"
 	// annotation key for hiding hyperthreads from allocated CPU sets
 	keyHideHyperthreads = "hide-hyperthreads"
+	// annotation to prefer shared LLC groups for the last (but not first) partial one
+	keyPreferSharedPartialLLCGroup = "prefer-shared-partial-llc-group"
 
 	// effective annotation key for isolated CPU preference
 	preferIsolatedCPUsKey = keyIsolationPreference + "." + kubernetes.ResmgrKeyNamespace
@@ -62,6 +64,8 @@ const (
 	preferCpuPriorityKey = keyCpuPriorityPreference + "." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for hiding hyperthreads
 	hideHyperthreadsKey = keyHideHyperthreads + "." + kubernetes.ResmgrKeyNamespace
+	// effective annotation key for shared partial LLC groups preference
+	preferSharedPartialLLCGroupKey = keyPreferSharedPartialLLCGroup + "." + kubernetes.ResmgrKeyNamespace
 )
 
 // cpuClass is a type of CPU to allocate
@@ -196,6 +200,19 @@ func hideHyperthreadsPreference(pod cache.Pod, container cache.Container) bool {
 		return false
 	}
 	return hide
+}
+
+// sharedPartialLLCGroupPreference returns whether a container prefers shared partial LLC groups.
+func sharedPartialLLCGroupPreference(container cache.Container) bool {
+	value, ok := container.GetEffectiveAnnotation(preferSharedPartialLLCGroupKey)
+	if !ok {
+		return false
+	}
+	shared, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return shared
 }
 
 // memoryTypePreference returns what type of memory should be allocated for the container.

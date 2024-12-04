@@ -403,9 +403,15 @@ func (cs *supply) AllocateCPU(r Request) (Grant, error) {
 	}
 
 	// allocate isolated exclusive CPUs or slice them off the sharable set
+	allocFlags := cpuallocator.AllocDefault
+	if sharedPartialLLCGroupPreference(cr.GetContainer()) {
+		log.Info("using shared LLC group preference for %s", cr.GetContainer().PrettyName())
+		allocFlags |= cpuallocator.PreferPartialSharedGroups
+	}
+
 	switch {
 	case full > 0 && cs.isolated.Size() >= full && cr.isolate:
-		exclusive, err = cs.takeCPUs(&cs.isolated, nil, full, cr.CPUPrio())
+		exclusive, err = cs.takeCPUs(&cs.isolated, nil, full, cr.CPUPrio().Option(), cpuallocator.WithAllocFlags(allocFlags))
 		if err != nil {
 			return nil, policyError("internal error: "+
 				"%s: can't take %d exclusive isolated CPUs from %s: %v",
@@ -413,7 +419,7 @@ func (cs *supply) AllocateCPU(r Request) (Grant, error) {
 		}
 
 	case full > 0 && cs.AllocatableSharedCPU() > 1000*full:
-		exclusive, err = cs.takeCPUs(&cs.sharable, nil, full, cr.CPUPrio())
+		exclusive, err = cs.takeCPUs(&cs.sharable, nil, full, cr.CPUPrio().Option(), cpuallocator.WithAllocFlags(allocFlags))
 		if err != nil {
 			return nil, policyError("internal error: "+
 				"%s: can't take %d exclusive CPUs from %s: %v",
@@ -509,8 +515,8 @@ func (cs *supply) Reserve(g Grant, o *libmem.Offer) (map[string]libmem.NodeMask,
 }
 
 // takeCPUs takes up to cnt CPUs from a given CPU set to another.
-func (cs *supply) takeCPUs(from, to *cpuset.CPUSet, cnt int, prio cpuPrio) (cpuset.CPUSet, error) {
-	cset, err := cs.node.Policy().cpuAllocator.AllocateCpus(from, cnt, prio.Option())
+func (cs *supply) takeCPUs(from, to *cpuset.CPUSet, cnt int, options ...cpuallocator.Option) (cpuset.CPUSet, error) {
+	cset, err := cs.node.Policy().cpuAllocator.AllocateCpus(from, cnt, options...)
 	if err != nil {
 		return cset, err
 	}
