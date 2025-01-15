@@ -60,7 +60,7 @@ jobs:
         uses: peter-evans/create-pull-request@v6
         with:
           signoff: true
-          author: nri-plugins-bot
+          author: "NRI Plugins Bot <${{ steps.import-gpg.outputs.email }}>"
           committer: "Github Actions <${{ steps.import-gpg.outputs.email }}>"
           add-paths: |
             operators/nri-plugins-operator/**
