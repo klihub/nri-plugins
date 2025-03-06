@@ -303,9 +303,7 @@ func (p *policy) checkHWTopology() (bool, error) {
 				continue
 			}
 			if shared := nodes1.Intersection(nodes2); !shared.IsEmpty() {
-				log.Error("can't handle HW topology: sockets #%v, #%v share NUMA node(s) #%s",
-					id1, id2, shared.String())
-				return false, policyError("unhandled HW topology: sockets #%v, #%v share NUMA node(s) #%s",
+				log.Warnf("formerly rejected HW topology: sockets #%v, #%v share NUMA node(s) #%s",
 					id1, id2, shared.String())
 			}
 		}
