@@ -28,36 +28,53 @@ import (
 )
 
 func (p *policy) buildTopologyPools() error {
-	var (
-		root Node = nilnode
-	)
-
 	p.nodes = make(map[string]Node)
 	p.pools = make([]Node, 0)
 
+	p.buildRootPool()
+	p.enumeratePools()
+
+	p.root.Dump("<pool-setup>")
+
+	return nil
+}
+
+func (p *policy) enumeratePools() {
+	id := 0
+	p.root.DepthFirst(func(n Node) {
+		n.(*node).id = id
+		id++
+		log.Info("pool %s (id #%d, depth %d)", n.Name(), n.NodeID(), n.(*node).depth)
+		if p.depth < n.(*node).depth {
+			p.depth = n.(*node).depth
+		}
+		p.pools = append(p.pools, n)
+	})
+}
+
+func (p *policy) buildRootPool() {
+	var root Node = nilnode
+
 	if p.sys.SocketCount() > 1 {
-		vn := p.NewVirtualNode("root", nilnode)
-		p.nodes[root.Name()] = vn
-		root = vn
-		p.root = vn
+		vroot := p.NewVirtualNode("root", nilnode)
+		p.nodes[vroot.Name()] = vroot
 
 		cpus := p.sys.CPUSet()
-		vn.node.noderes = p.getCpuSupply(vn, cpus)
-		vn.node.freeres = vn.node.noderes.Clone()
+		vroot.node.noderes = p.getCpuSupply(vroot, cpus)
+		vroot.node.freeres = vroot.node.noderes.Clone()
 
 		dram, pmem, hbm := p.getMemForCpus(cpus)
-		vn.node.mem = dram
-		vn.node.pMem = pmem
-		vn.node.hbm = hbm
+		vroot.node.mem = dram
+		vroot.node.pMem = pmem
+		vroot.node.hbm = hbm
+
+		p.root = vroot
+		root = vroot
 	}
 
 	for _, socketID := range p.sys.PackageIDs() {
 		p.buildSocketPool(socketID, root)
 	}
-
-	p.root.Dump("<pool-setup>")
-
-	return nil
 }
 
 func (p *policy) buildSocketPool(socketID idset.ID, root Node) {
@@ -156,6 +173,32 @@ func (p *policy) getMemForCpus(cpus cpuset.CPUSet) (dram, pmem, hbm idset.IDSet)
 	}
 
 	return dram, pmem, hbm
+}
+
+func (p *policy) getCloseMemsForCpulessMem() map[idset.ID][]idset.ID {
+	close := map[idset.ID][]idset.ID{}
+
+	for _, nodeID := range p.sys.NodeIDs() {
+		node := p.sys.Node(nodeID)
+		if !node.CPUSet().IsEmpty() {
+			continue
+		}
+		close[nodeID] = []idset.ID{}
+		dist := -1
+		for id, d := range node.Distance() {
+			switch {
+			case id == nodeID:
+				continue
+			case dist == -1 || d < dist:
+				dist = d
+				close[nodeID] = []idset.ID{id}
+			case d == dist:
+				close[nodeID] = append(close[nodeID], id)
+			}
+		}
+	}
+
+	return close
 }
 
 // buildPoolsByTopology builds a hierarchical tree of pools based on HW topology.
