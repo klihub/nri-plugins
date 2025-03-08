@@ -514,7 +514,10 @@ func (p *policy) initialize() error {
 		return err
 	}
 
-	if err := p.buildPoolsByTopology(); err != nil {
+	/*if err := p.buildPoolsByTopology(); err != nil {
+		return err
+	}*/
+	if err := p.buildTopologyPools(); err != nil {
 		return err
 	}
 

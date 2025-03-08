@@ -27,6 +27,111 @@ import (
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
+func (p *policy) buildTopologyPools() error {
+	var (
+		root Node = nilnode
+	)
+
+	p.nodes = make(map[string]Node)
+
+	if p.sys.SocketCount() > 1 {
+		vn := p.NewVirtualNode("root", nilnode)
+		p.nodes[root.Name()] = vn
+		root = vn
+		p.root = vn
+
+		var (
+			allowed  = p.sys.CPUSet().Intersection(p.allowed)
+			isolated = allowed.Intersection(p.isolated)
+			reserved = allowed.Intersection(p.reserved)
+			sharable = allowed.Difference(isolated).Difference(reserved)
+		)
+
+		vn.node.noderes = newSupply(vn, isolated, reserved, sharable, 0, 0)
+		vn.node.freeres = vn.node.noderes.Clone()
+	}
+
+	log.Info("*** p.root: %v", p.root)
+
+	for _, socketID := range p.sys.PackageIDs() {
+		p.buildSocketPool(socketID, root)
+	}
+
+	p.root.Dump("<pool-setup>")
+
+	return nil
+}
+
+func (p *policy) buildSocketPool(socketID idset.ID, root Node) {
+	socket := p.NewSocketNode(socketID, root)
+
+	p.nodes[socket.Name()] = socket
+	if p.root == nil {
+		p.root = socket
+	}
+
+	if dieIDs := p.sys.Package(socketID).DieIDs(); len(dieIDs) > 1 {
+		for _, dieID := range dieIDs {
+			p.buildDiePool(socketID, dieID, socket)
+		}
+	} else {
+		if nodeIDs := p.sys.Package(socketID).NodeIDs(); len(nodeIDs) > 1 {
+			for _, nodeID := range nodeIDs {
+				p.buildNumaNodePool(socketID, nodeID, socket)
+			}
+		}
+	}
+
+	var (
+		allowed  = p.sys.Package(socketID).CPUSet().Intersection(p.allowed)
+		isolated = allowed.Intersection(p.isolated)
+		reserved = allowed.Intersection(p.reserved)
+		sharable = allowed.Difference(isolated).Difference(reserved)
+	)
+
+	socket.node.noderes = newSupply(socket, isolated, reserved, sharable, 0, 0)
+	socket.node.freeres = socket.node.noderes.Clone()
+}
+
+func (p *policy) buildDiePool(socketID, dieID idset.ID, socket Node) {
+	die := p.NewDieNode(dieID, socket)
+
+	p.nodes[die.Name()] = die
+
+	if nodeIDs := p.sys.Package(socketID).DieNodeIDs(dieID); len(nodeIDs) > 1 {
+		for _, nodeID := range nodeIDs {
+			p.buildNumaNodePool(socketID, nodeID, die)
+		}
+	}
+
+	var (
+		allowed  = p.sys.Package(socketID).DieCPUSet(dieID).Intersection(p.allowed)
+		isolated = allowed.Intersection(p.isolated)
+		reserved = allowed.Intersection(p.reserved)
+		sharable = allowed.Difference(isolated).Difference(reserved)
+	)
+
+	die.node.noderes = newSupply(die, isolated, reserved, sharable, 0, 0)
+	die.node.freeres = die.node.noderes.Clone()
+
+}
+
+func (p *policy) buildNumaNodePool(socketID, nodeID idset.ID, parent Node) {
+	node := p.NewNumaNode(nodeID, parent)
+
+	p.nodes[node.Name()] = node
+
+	var (
+		allowed  = p.sys.Node(nodeID).CPUSet().Intersection(p.allowed)
+		isolated = allowed.Intersection(p.isolated)
+		reserved = allowed.Intersection(p.reserved)
+		sharable = allowed.Difference(isolated).Difference(reserved)
+	)
+
+	node.node.noderes = newSupply(node, isolated, reserved, sharable, 0, 0)
+	node.node.freeres = node.node.noderes.Clone()
+}
+
 // buildPoolsByTopology builds a hierarchical tree of pools based on HW topology.
 func (p *policy) buildPoolsByTopology() error {
 	omitDies, err := p.checkHWTopology()
@@ -319,7 +424,7 @@ func (p *policy) checkHWTopology() (bool, error) {
 					continue
 				}
 				nodes2 := idset.NewIDSet(pkg.DieNodeIDs(id2)...)
-				if shared := system.CPUSetFromIDSet(nodes1).Intersection(system.CPUSetFromIDSet(nodes2)); !shared.IsEmpty() {
+				if shared := system.CPUSetFromIDSet(nodes1).Intersection(system.CPUSetFromIDSet(nodes2)); !shared.IsEmpty() && p.sys.NUMANodeCount() > 1 {
 					log.Error("will ignore dies: "+
 						"socket #%v, dies #%v,%v share NUMA node(s) #%s",
 						socketID, id1, id2, shared.String())

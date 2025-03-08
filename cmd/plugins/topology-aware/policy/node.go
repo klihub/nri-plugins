@@ -550,7 +550,7 @@ func (n *node) HasMemoryType(reqType memoryType) bool {
 }
 
 // NewNumaNode create a node for a CPU socket.
-func (p *policy) NewNumaNode(id idset.ID, parent Node) Node {
+func (p *policy) NewNumaNode(id idset.ID, parent Node) *numanode {
 	n := &numanode{}
 	n.self.node = n
 	n.node.init(p, fmt.Sprintf("NUMA node #%v", id), NumaNode, parent)
@@ -624,7 +624,7 @@ func (n *numanode) HintScore(hint topology.Hint) float64 {
 }
 
 // NewDieNode create a node for a CPU die.
-func (p *policy) NewDieNode(id idset.ID, parent Node) Node {
+func (p *policy) NewDieNode(id idset.ID, parent Node) *dienode {
 	pkg := parent.(*socketnode)
 	n := &dienode{}
 	n.self.node = n
@@ -704,7 +704,7 @@ func (n *dienode) HintScore(hint topology.Hint) float64 {
 }
 
 // NewSocketNode create a node for a CPU socket.
-func (p *policy) NewSocketNode(id idset.ID, parent Node) Node {
+func (p *policy) NewSocketNode(id idset.ID, parent Node) *socketnode {
 	n := &socketnode{}
 	n.self.node = n
 	n.node.init(p, fmt.Sprintf("socket #%v", id), SocketNode, parent)
@@ -778,7 +778,7 @@ func (n *socketnode) HintScore(hint topology.Hint) float64 {
 }
 
 // NewVirtualNode creates a new virtual node.
-func (p *policy) NewVirtualNode(name string, parent Node) Node {
+func (p *policy) NewVirtualNode(name string, parent Node) *virtualnode {
 	n := &virtualnode{}
 	n.self.node = n
 	n.node.init(p, name, VirtualNode, parent)
