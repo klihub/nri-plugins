@@ -33,6 +33,7 @@ func (p *policy) buildTopologyPools() error {
 	)
 
 	p.nodes = make(map[string]Node)
+	p.pools = make([]Node, 0)
 
 	if p.sys.SocketCount() > 1 {
 		vn := p.NewVirtualNode("root", nilnode)
@@ -40,18 +41,15 @@ func (p *policy) buildTopologyPools() error {
 		root = vn
 		p.root = vn
 
-		var (
-			allowed  = p.sys.CPUSet().Intersection(p.allowed)
-			isolated = allowed.Intersection(p.isolated)
-			reserved = allowed.Intersection(p.reserved)
-			sharable = allowed.Difference(isolated).Difference(reserved)
-		)
-
-		vn.node.noderes = newSupply(vn, isolated, reserved, sharable, 0, 0)
+		cpus := p.sys.CPUSet()
+		vn.node.noderes = p.getCpuSupply(vn, cpus)
 		vn.node.freeres = vn.node.noderes.Clone()
-	}
 
-	log.Info("*** p.root: %v", p.root)
+		dram, pmem, hbm := p.getMemForCpus(cpus)
+		vn.node.mem = dram
+		vn.node.pMem = pmem
+		vn.node.hbm = hbm
+	}
 
 	for _, socketID := range p.sys.PackageIDs() {
 		p.buildSocketPool(socketID, root)
@@ -82,15 +80,15 @@ func (p *policy) buildSocketPool(socketID idset.ID, root Node) {
 		}
 	}
 
-	var (
-		allowed  = p.sys.Package(socketID).CPUSet().Intersection(p.allowed)
-		isolated = allowed.Intersection(p.isolated)
-		reserved = allowed.Intersection(p.reserved)
-		sharable = allowed.Difference(isolated).Difference(reserved)
-	)
-
-	socket.node.noderes = newSupply(socket, isolated, reserved, sharable, 0, 0)
+	cpus := p.sys.Package(socketID).CPUSet()
+	socket.node.noderes = p.getCpuSupply(socket, cpus)
 	socket.node.freeres = socket.node.noderes.Clone()
+
+	dram, pmem, hbm := p.getMemForCpus(cpus)
+	socket.node.mem = dram
+	socket.node.pMem = pmem
+	socket.node.hbm = hbm
+
 }
 
 func (p *policy) buildDiePool(socketID, dieID idset.ID, socket Node) {
@@ -104,16 +102,14 @@ func (p *policy) buildDiePool(socketID, dieID idset.ID, socket Node) {
 		}
 	}
 
-	var (
-		allowed  = p.sys.Package(socketID).DieCPUSet(dieID).Intersection(p.allowed)
-		isolated = allowed.Intersection(p.isolated)
-		reserved = allowed.Intersection(p.reserved)
-		sharable = allowed.Difference(isolated).Difference(reserved)
-	)
-
-	die.node.noderes = newSupply(die, isolated, reserved, sharable, 0, 0)
+	cpus := p.sys.Package(socketID).DieCPUSet(dieID)
+	die.node.noderes = p.getCpuSupply(die, cpus)
 	die.node.freeres = die.node.noderes.Clone()
 
+	dram, pmem, hbm := p.getMemForCpus(cpus)
+	die.node.mem = dram
+	die.node.pMem = pmem
+	die.node.hbm = hbm
 }
 
 func (p *policy) buildNumaNodePool(socketID, nodeID idset.ID, parent Node) {
@@ -121,15 +117,45 @@ func (p *policy) buildNumaNodePool(socketID, nodeID idset.ID, parent Node) {
 
 	p.nodes[node.Name()] = node
 
+	cpus := p.sys.Node(nodeID).CPUSet()
+	node.node.noderes = p.getCpuSupply(node, cpus)
+	node.node.freeres = node.node.noderes.Clone()
+
+	dram, pmem, hbm := p.getMemForCpus(cpus)
+	node.node.mem = dram
+	node.node.pMem = pmem
+	node.node.hbm = hbm
+}
+
+func (p *policy) getCpuSupply(node Node, cpus cpuset.CPUSet) Supply {
 	var (
-		allowed  = p.sys.Node(nodeID).CPUSet().Intersection(p.allowed)
+		allowed  = cpus.Intersection(p.allowed)
 		isolated = allowed.Intersection(p.isolated)
 		reserved = allowed.Intersection(p.reserved)
 		sharable = allowed.Difference(isolated).Difference(reserved)
 	)
 
-	node.node.noderes = newSupply(node, isolated, reserved, sharable, 0, 0)
-	node.node.freeres = node.node.noderes.Clone()
+	return newSupply(node, isolated, reserved, sharable, 0, 0)
+}
+
+func (p *policy) getMemForCpus(cpus cpuset.CPUSet) (dram, pmem, hbm idset.IDSet) {
+	dram, pmem, hbm = idset.NewIDSet(), idset.NewIDSet(), idset.NewIDSet()
+
+	for _, nodeID := range p.sys.NodeIDs() {
+		node := p.sys.Node(nodeID)
+		if !node.CPUSet().Intersection(cpus).IsEmpty() {
+			switch node.GetMemoryType() {
+			case system.MemoryTypeDRAM:
+				dram.Add(nodeID)
+			case system.MemoryTypePMEM:
+				pmem.Add(nodeID)
+			case system.MemoryTypeHBM:
+				hbm.Add(nodeID)
+			}
+		}
+	}
+
+	return dram, pmem, hbm
 }
 
 // buildPoolsByTopology builds a hierarchical tree of pools based on HW topology.
