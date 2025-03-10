@@ -33,6 +33,7 @@ func (p *policy) buildTopologyPools() error {
 
 	p.buildRootPool()
 	p.enumeratePools()
+	p.assignCpulessNodes()
 
 	p.root.Dump("<pool-setup>")
 
@@ -49,6 +50,17 @@ func (p *policy) enumeratePools() {
 			p.depth = n.(*node).depth
 		}
 		p.pools = append(p.pools, n)
+	})
+}
+
+func (p *policy) assignCpulessNodes() {
+	cpuless := p.getCloseMemsWithCpu()
+	p.root.DepthFirst(func(n Node) {
+		mems := n.GetMemset(memoryAll).Clone()
+		dram, pmem, hbm := p.getMemsWithoutCpu(mems, cpuless)
+		n.(*node).mem.Add(dram.Members()...)
+		n.(*node).pMem.Add(pmem.Members()...)
+		n.(*node).hbm.Add(hbm.Members()...)
 	})
 }
 
@@ -105,7 +117,6 @@ func (p *policy) buildSocketPool(socketID idset.ID, root Node) {
 	socket.node.mem = dram
 	socket.node.pMem = pmem
 	socket.node.hbm = hbm
-
 }
 
 func (p *policy) buildDiePool(socketID, dieID idset.ID, socket Node) {
@@ -175,15 +186,35 @@ func (p *policy) getMemForCpus(cpus cpuset.CPUSet) (dram, pmem, hbm idset.IDSet)
 	return dram, pmem, hbm
 }
 
-func (p *policy) getCloseMemsForCpulessMem() map[idset.ID][]idset.ID {
-	close := map[idset.ID][]idset.ID{}
+func (p *policy) getMemsWithoutCpu(ids idset.IDSet, close map[idset.ID]idset.IDSet) (dram, pmem, hbm idset.IDSet) {
+	dram, pmem, hbm = idset.NewIDSet(), idset.NewIDSet(), idset.NewIDSet()
+
+	for _, nodeID := range ids.SortedMembers() {
+		for _, closeID := range close[nodeID].SortedMembers() {
+			node := p.sys.Node(closeID)
+			switch node.GetMemoryType() {
+			case system.MemoryTypeDRAM:
+				dram.Add(closeID)
+			case system.MemoryTypePMEM:
+				pmem.Add(closeID)
+			case system.MemoryTypeHBM:
+				hbm.Add(closeID)
+			}
+		}
+	}
+
+	return dram, pmem, hbm
+}
+
+func (p *policy) getCloseMemsWithCpu() map[idset.ID]idset.IDSet {
+	close := map[idset.ID]idset.IDSet{}
 
 	for _, nodeID := range p.sys.NodeIDs() {
 		node := p.sys.Node(nodeID)
 		if !node.CPUSet().IsEmpty() {
 			continue
 		}
-		close[nodeID] = []idset.ID{}
+		close[nodeID] = idset.NewIDSet()
 		dist := -1
 		for id, d := range node.Distance() {
 			switch {
@@ -191,14 +222,28 @@ func (p *policy) getCloseMemsForCpulessMem() map[idset.ID][]idset.ID {
 				continue
 			case dist == -1 || d < dist:
 				dist = d
-				close[nodeID] = []idset.ID{id}
+				close[nodeID] = idset.NewIDSet(id)
 			case d == dist:
-				close[nodeID] = append(close[nodeID], id)
+				close[nodeID].Add(id)
 			}
 		}
 	}
 
-	return close
+	reverse := map[idset.ID]idset.IDSet{}
+	for id, closeIDs := range close {
+		for _, closeID := range closeIDs.SortedMembers() {
+			if reverse[closeID] == nil {
+				reverse[closeID] = idset.NewIDSet(id)
+			} else {
+				reverse[closeID].Add(id)
+			}
+		}
+	}
+
+	log.Info("closest memory nodes with CPUs: %v", close)
+	log.Info("reverse closest memory nodes with CPUs: %v", reverse)
+
+	return reverse
 }
 
 // buildPoolsByTopology builds a hierarchical tree of pools based on HW topology.
