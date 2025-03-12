@@ -63,6 +63,23 @@ spec:
                   AvailableResources defines the bounding set for the policy to allocate
                   resources from.
                 type: object
+              blockIOClasses:
+                description: |-
+                  Config provides runtime configuration for class based block I/O
+                  prioritization and throttling.
+                properties:
+                  enable:
+                    description: |-
+                      Enable class based block I/O prioritization and throttling. When
+                      enabled, policy implementations can adjust block I/O priority by
+                      by assigning containers to block I/O priority classes.
+                    type: boolean
+                  usePodQoSAsDefault:
+                    description: |-
+                      usePodQoSAsDefault controls whether a container's Pod QoS class
+                      is to be used as its block I/O class, if this is otherwise unset.
+                    type: boolean
+                type: object
               colocateNamespaces:
                 description: |-
                   ColocateNamespaces controls whether an attempt is made to allocate all
@@ -248,6 +265,23 @@ spec:
                   considered for eligible containers which are explicitly annotated to opt
                   out from shared allocation.
                 type: boolean
+              rdtClasses:
+                description: |-
+                  Config provides runtime configuration for class based cache allocation
+                  and memory bandwidth control.
+                properties:
+                  enable:
+                    description: |-
+                      Enable class based cache allocation and memory bandwidth control.
+                      When enabled, policy implementations can adjust cache allocation
+                      and memory bandwidth by assigning containers to RDT classes.
+                    type: boolean
+                  usePodQoSAsDefault:
+                    description: |-
+                      usePodQoSAsDefault controls whether a container's Pod QoS class
+                      is to be used as its RDT class, if this is otherwise unset.
+                    type: boolean
+                type: object
               reservedPoolNamespaces:
                 description: |-
                   ReservedPoolNamespaces lists extra namespaces which are treated like

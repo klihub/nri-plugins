@@ -36,6 +36,8 @@ func (c *BalloonsPolicy) CommonConfig() *CommonConfig {
 		Control:         c.Spec.Control,
 		Log:             c.Spec.Log,
 		Instrumentation: c.Spec.Instrumentation,
+		RDTClasses:      c.Spec.RDTClasses,
+		BlockIOClasses:  c.Spec.BlockIOClasses,
 	}
 }
 
