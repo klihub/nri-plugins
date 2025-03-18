@@ -55,8 +55,9 @@ func estimateResourceRequirements(r *nri.LinuxResources, qosClass corev1.PodQOSC
 	}
 
 	// get memory limit
-	if value := r.GetMemory().GetLimit().GetValue(); value > 0 {
-		qty := resapi.NewQuantity(value, resapi.DecimalSI)
+	memLimit := int64(0)
+	if memLimit = r.GetMemory().GetLimit().GetValue(); memLimit > 0 {
+		qty := resapi.NewQuantity(memLimit, resapi.DecimalSI)
 		resources.Limits[corev1.ResourceMemory] = *qty
 	}
 
@@ -66,7 +67,7 @@ func estimateResourceRequirements(r *nri.LinuxResources, qosClass corev1.PodQOSC
 		resources.Limits[corev1.ResourceCPU] = resources.Requests[corev1.ResourceCPU]
 		resources.Requests[corev1.ResourceMemory] = resources.Limits[corev1.ResourceMemory]
 	case corev1.PodQOSBurstable:
-		if req := OomAdjToMemReq(oomAdj, memoryCapacity); req != nil && *req != 0 {
+		if req := OomAdjToMemReq(oomAdj, memoryCapacity, memLimit); req != nil && *req != 0 {
 			log.Info("estimated memory request: %d (%.2fM)", *req, float64(*req)/(1024*1024))
 			qty := resapi.NewQuantity(*req, resapi.DecimalSI)
 			resources.Requests[corev1.ResourceMemory] = *qty
