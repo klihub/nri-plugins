@@ -35,10 +35,11 @@ var (
 	QuotaToMilliCPU  = kubernetes.QuotaToMilliCPU
 	MilliCPUToShares = kubernetes.MilliCPUToShares
 	MilliCPUToQuota  = kubernetes.MilliCPUToQuota
+	OomAdjToMemReq   = kubernetes.OomAdjToMemReq
 )
 
 // Try to estimate CRI resource requirements from NRI resources.
-func estimateResourceRequirements(r *nri.LinuxResources, qosClass corev1.PodQOSClass) corev1.ResourceRequirements {
+func estimateResourceRequirements(r *nri.LinuxResources, qosClass corev1.PodQOSClass, oomAdj int64) corev1.ResourceRequirements {
 	resources := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{},
 		Limits:   corev1.ResourceList{},
@@ -64,9 +65,14 @@ func estimateResourceRequirements(r *nri.LinuxResources, qosClass corev1.PodQOSC
 	case corev1.PodQOSGuaranteed:
 		resources.Limits[corev1.ResourceCPU] = resources.Requests[corev1.ResourceCPU]
 		resources.Requests[corev1.ResourceMemory] = resources.Limits[corev1.ResourceMemory]
-	default:
+	case corev1.PodQOSBurstable:
+		if req := OomAdjToMemReq(oomAdj, memoryCapacity); req != nil && *req != 0 {
+			log.Info("estimated memory request: %d (%.2fM)", *req, float64(*req)/(1024*1024))
+			qty := resapi.NewQuantity(*req, resapi.DecimalSI)
+			resources.Requests[corev1.ResourceMemory] = *qty
+		}
 		fallthrough
-	case corev1.PodQOSBestEffort, corev1.PodQOSBurstable:
+	case corev1.PodQOSBestEffort:
 		quota := cpu.GetQuota().GetValue()
 		period := int64(cpu.GetPeriod().GetValue())
 		if value := QuotaToMilliCPU(quota, period); value > 0 {

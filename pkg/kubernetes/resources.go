@@ -30,6 +30,13 @@ const (
 	QuotaPeriod = 100000
 	// MinQuotaPeriod is 1000 microseconds, or 1ms
 	MinQuotaPeriod = 1000
+
+	GuaranteedOOMScoreAdj = -997
+	BestEffortOOMScoreAdj = 1000
+
+	MinBurstableOOMScoreAdj = 1000 + GuaranteedOOMScoreAdj // 1000 - 997 = 3
+	MaxBurstableOOMScoreAdj = BestEffortOOMScoreAdj - 1    // 1000 - 1 = 999
+
 )
 
 // MilliCPUToQuota converts milliCPU to CFS quota and period values.
@@ -81,4 +88,22 @@ func QuotaToMilliCPU(quota, period int64) int64 {
 		return 0
 	}
 	return int64(float64(quota*MilliCPUToCPU)/float64(period) + 0.5)
+}
+
+// OomAdjToMemReq estimates memory request based on OOM score adjustment.
+func OomAdjToMemReq(oomAdj int64, memCapacity, memLimit int64) *int64 {
+	if memCapacity == 0 {
+		return nil
+	}
+
+	if oomAdj < MinBurstableOOMScoreAdj || oomAdj > MaxBurstableOOMScoreAdj {
+		return nil
+	}
+
+	value := (float64(memCapacity) * float64(1000-oomAdj)) / 1000.0
+	if req := int64(value); req < memLimit || memLimit == 0 {
+		return &req
+	}
+
+	return nil
 }
