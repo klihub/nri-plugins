@@ -224,6 +224,8 @@ $(BIN_PATH)/%: .static.%.$(STATIC)
 
 .PRECIOUS: $(foreach dir,$(BUILD_DIRS),.static.$(dir).1 .static.$(dir).)
 
+nri-resource-policy-topology-aware: $(BIN_PATH)/nri-resource-policy-topology-aware
+
 #
 # Image building test deployment generation targets
 #
