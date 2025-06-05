@@ -145,6 +145,8 @@ func (p *policy) Start() error {
 	p.root.Dump("<post-start>")
 	p.checkAllocations("  <post-start>")
 
+	p.options.PublishCPUs(p.allowed.Difference(p.reserved).List())
+
 	return nil
 }
 
@@ -497,6 +499,8 @@ func (p *policy) Reconfigure(newCfg interface{}) error {
 
 	p.root.Dump("<post-config>")
 	p.checkAllocations("  <post-config>")
+
+	p.options.PublishCPUs(p.allowed.Difference(p.reserved).List())
 
 	return nil
 }
