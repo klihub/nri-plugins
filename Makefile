@@ -79,7 +79,8 @@ PLUGINS ?= \
 	nri-resource-policy-template \
 	nri-memory-qos \
 	nri-memtierd \
-        nri-sgx-epc
+        nri-sgx-epc \
+	nri-cpu-dra-driver
 
 BINARIES ?= \
 	config-manager
