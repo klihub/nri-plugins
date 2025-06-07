@@ -285,7 +285,7 @@ func (p *policy) UpdateResources(container cache.Container) error {
 // AllocateClaim alloctes CPUs for the claim.
 func (p *policy) AllocateClaim(claim policyapi.Claim) error {
 	log.Info("allocating claim %s for pods %v...", claim.String(), claim.GetPods())
-	return nil
+	return p.allocateClaim(claim)
 }
 
 // ReleaseClaim releases CPUs of the claim.
@@ -646,7 +646,11 @@ func (p *policy) newAllocations() allocations {
 
 // clone creates a copy of the allocation.
 func (a *allocations) clone() allocations {
-	o := allocations{policy: a.policy, grants: make(map[string]Grant)}
+	o := allocations{
+		policy: a.policy,
+		grants: make(map[string]Grant),
+		//claims: make(map[string][]policyapi.Claim),
+	}
 	for id, grant := range a.grants {
 		o.grants[id] = grant.Clone()
 	}
