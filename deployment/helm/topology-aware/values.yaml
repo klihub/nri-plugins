@@ -41,6 +41,7 @@ nri:
     annotations:
 #      key1: value1
 #      key2: value2
+    allowRDT: false
   runtime:
     patchConfig: false
 #   config:
