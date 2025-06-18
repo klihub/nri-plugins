@@ -15,11 +15,22 @@
 package resmgr
 
 import (
-	"fmt"
-
 	"github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control/blockio"
-	logger "github.com/containers/nri-plugins/pkg/log"
 )
+
+//
+// Notes:
+//   This is now just a placeholder, mostly to keep our RDT and block I/O
+//   control implementation aligned, since both of them are handled using
+//   goresctrl in the runtime currently. However unlike for RDT, we can't
+//   easily split class configuration and class translation to (cgroup io
+//   control) parameters between two processes (NRI plugins and runtime),
+//   because class configuration is just an in-process mapping of names
+//   to parameters. We'll need more work to bring block I/O control up to
+//   the same level as RDT, for instance by adding block I/O cgroup v2
+//   support to goresctrl, doing class name to parameter conversion here,
+//   and using the v2 unified NRI field to pass those to the runtime (and
+//   check if this works properly with runc/crun).
 
 type blkioControl struct {
 	resmgr   *resmgr
@@ -27,12 +38,6 @@ type blkioControl struct {
 }
 
 func newBlockioControl(resmgr *resmgr, hostRoot string) *blkioControl {
-	blockio.SetLogger(logger.Get("goresctrl"))
-
-	if hostRoot != "" {
-		blockio.SetPrefix(opt.HostRoot)
-	}
-
 	return &blkioControl{
 		resmgr:   resmgr,
 		hostRoot: hostRoot,
@@ -42,17 +47,6 @@ func newBlockioControl(resmgr *resmgr, hostRoot string) *blkioControl {
 func (c *blkioControl) configure(cfg *blockio.Config) error {
 	if cfg == nil {
 		return nil
-	}
-
-	if cfg.Enable {
-		nativeCfg, force := cfg.ToGoresctrl()
-
-		if nativeCfg != nil {
-			if err := blockio.SetConfig(nativeCfg, force); err != nil {
-				return fmt.Errorf("failed to configure goresctrl/blockio: %w", err)
-			}
-			log.Info("goresctrl/blockio configuration updated")
-		}
 	}
 
 	c.resmgr.cache.ConfigureBlockIOControl(cfg.Enable)
