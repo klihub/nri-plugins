@@ -35,6 +35,9 @@ var (
 	Initialize func(string) error            = rdt.Initialize
 	SetLogger  func(grclog.Logger)           = rdt.SetLogger
 	SetConfig  func(*rdt.Config, bool) error = rdt.SetConfig
+
+	GetClasses func() []rdt.CtrlGroup             = rdt.GetClasses
+	GetClass   func(string) (rdt.CtrlGroup, bool) = rdt.GetClass
 )
 
 // Config provides runtime configuration for class based cache allocation
