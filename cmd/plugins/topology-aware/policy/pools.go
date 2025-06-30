@@ -722,6 +722,55 @@ func (p *policy) compareScores(request Request, pools []Node, scores map[int]Sco
 
 	log.Debug("  - affinity is a TIE")
 
+	// better topology hint score wins
+	hScores1 := score1.HintScores()
+	if len(hScores1) > 0 {
+		hScores2 := score2.HintScores()
+		hs1, nz1 := combineHintScores(hScores1)
+		hs2, nz2 := combineHintScores(hScores2)
+
+		if hs1 > hs2 {
+			log.Debug("  => %s WINS on hints", node1.Name())
+			return true
+		}
+		if hs2 > hs1 {
+			log.Debug("  => %s WINS on hints", node2.Name())
+			return false
+		}
+
+		log.Debug("  - hints are a TIE")
+
+		if hs1 == 0 {
+			if nz1 > nz2 {
+				log.Debug("  => %s WINS on non-zero hints", node1.Name())
+				return true
+			}
+			if nz2 > nz1 {
+				log.Debug("  => %s WINS on non-zero hints", node2.Name())
+				return false
+			}
+
+			log.Debug("  - non-zero hints are a TIE")
+		}
+
+		// for a tie, prefer lower nodes and smaller ids
+		if hs1 == hs2 && nz1 == nz2 && (hs1 != 0 || nz1 != 0) {
+			if depth1 > depth2 {
+				log.Debug("  => %s WINS as it is lower", node1.Name())
+				return true
+			}
+			if depth1 < depth2 {
+				log.Debug("  => %s WINS as it is lower", node2.Name())
+				return false
+			}
+
+			log.Debug("  => %s WINS based on equal hint socres, lower id",
+				map[bool]string{true: node1.Name(), false: node2.Name()}[id1 < id2])
+
+			return id1 < id2
+		}
+	}
+
 	// better matching or tighter memory offer wins
 	switch {
 	case o1 != nil && o2 == nil:
@@ -787,55 +836,6 @@ func (p *policy) compareScores(request Request, pools []Node, scores map[int]Sco
 		}
 
 		log.Debug("  - memory type is a TIE")
-	}
-
-	// better topology hint score wins
-	hScores1 := score1.HintScores()
-	if len(hScores1) > 0 {
-		hScores2 := score2.HintScores()
-		hs1, nz1 := combineHintScores(hScores1)
-		hs2, nz2 := combineHintScores(hScores2)
-
-		if hs1 > hs2 {
-			log.Debug("  => %s WINS on hints", node1.Name())
-			return true
-		}
-		if hs2 > hs1 {
-			log.Debug("  => %s WINS on hints", node2.Name())
-			return false
-		}
-
-		log.Debug("  - hints are a TIE")
-
-		if hs1 == 0 {
-			if nz1 > nz2 {
-				log.Debug("  => %s WINS on non-zero hints", node1.Name())
-				return true
-			}
-			if nz2 > nz1 {
-				log.Debug("  => %s WINS on non-zero hints", node2.Name())
-				return false
-			}
-
-			log.Debug("  - non-zero hints are a TIE")
-		}
-
-		// for a tie, prefer lower nodes and smaller ids
-		if hs1 == hs2 && nz1 == nz2 && (hs1 != 0 || nz1 != 0) {
-			if depth1 > depth2 {
-				log.Debug("  => %s WINS as it is lower", node1.Name())
-				return true
-			}
-			if depth1 < depth2 {
-				log.Debug("  => %s WINS as it is lower", node2.Name())
-				return false
-			}
-
-			log.Debug("  => %s WINS based on equal hint socres, lower id",
-				map[bool]string{true: node1.Name(), false: node2.Name()}[id1 < id2])
-
-			return id1 < id2
-		}
 	}
 
 	// for low-prio and high-prio CPU preference, the only fulfilling node wins
