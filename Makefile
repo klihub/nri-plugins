@@ -86,6 +86,9 @@ BINARIES ?= \
 	config-manager \
 	mpolset
 
+TEST_BINARIES ?= \
+	test-mem-hog
+
 OTHER_IMAGE_TARGETS ?= \
 	nri-plugins-operator-image \
 	nri-plugins-operator-bundle-image
@@ -140,7 +143,7 @@ build: build-plugins build-binaries build-check
 build-static:
 	$(MAKE) STATIC=1 build
 
-clean: clean-plugins clean-binaries
+clean: clean-plugins clean-binaries clean-test-binaries
 
 allclean: clean clean-cache
 
@@ -162,7 +165,14 @@ build-binaries: $(foreach bin,$(BINARIES),$(BIN_PATH)/$(bin))
 build-binaries-static:
 	$(MAKE) STATIC=1 DEBUG=$(DEBUG) NORACE=$(NORACE) build-binaries
 
+build-test-binaries: $(foreach bin,$(TEST_BINARIES),$(BIN_PATH)/$(bin))
+
+build-test-binaries-static:
+	$(MAKE) STATIC=1 DEBUG=$(DEBUG) NORACE=$(NORACE) build-test-binaries
+
 build-images: images
+
+build-test-images: test-images
 
 build-check:
 	$(Q)$(GO_BUILD) -v $(GO_MODULES)
@@ -180,6 +190,12 @@ clean-plugins:
 clean-binaries:
 	$(Q)echo "Cleaning $(BINARIES)"; \
 	for i in $(BINARIES); do \
+		rm -f $(BIN_PATH)/$$i; \
+	done
+
+clean-test-binaries:
+	$(Q)echo "Cleaning $(TEST_BINARIES)"; \
+	for i in $(TEST_BINARIES); do \
 		rm -f $(BIN_PATH)/$$i; \
 	done
 
@@ -212,6 +228,12 @@ $(BIN_PATH)/%: .static.%.$(STATIC)
 	mkdir -p $(BIN_PATH) && \
 	cd "$$src" && $(GO_BUILD) $(BUILD_TAGS) $(LDFLAGS) $(GCFLAGS) -o $@
 
+$(BIN_PATH)/test-%: .static.%.$(STATIC)
+	$(Q)echo "Building $(STATIC_TYPE)$@ (version $(BUILD_VERSION), build $(BUILD_BUILDID))..."; \
+	src="./cmd/test/$(patsubst test-%,%,$(notdir $@))"; \
+	mkdir -p $(BIN_PATH) && \
+	cd "$$src" && $(GO_BUILD) $(BUILD_TAGS) $(LDFLAGS) $(GCFLAGS) -o $@
+
 .static.%.$(STATIC):
 	$(Q)if [ ! -f "$@" ]; then \
 	    touch "$@"; \
@@ -233,8 +255,11 @@ images: $(foreach p,$(PLUGINS),image.$(p)) \
 	$(foreach p,$(BINARIES),image.$(p)) \
 	$(OTHER_IMAGE_TARGETS)
 
+test-images: $(foreach p,$(TEST_BINARIES),image.$(p))
+
 image.nri-resource-policy-% \
 image.nri-% \
+image.test-% \
 image.%:
 	$(Q)mkdir -p $(IMAGE_PATH); \
 	case $@ in \
@@ -243,6 +268,9 @@ image.%:
 	        ;; \
 	    *.nri-*) \
 		dir=$(patsubst image.nri-%,cmd/plugins/%,$@); \
+	        ;; \
+	    *.test-*) \
+		dir=$(patsubst image.test-%,cmd/test/%,$@); \
 	        ;; \
 	    *.*) \
 		dir=$(patsubst image.%,cmd/%,$@); \
