@@ -4,7 +4,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Balloons Policy &mdash; NRI Plugins v0.9.0-32-ge3b0bcc9 documentation</title>
+  <title>Balloons Policy &mdash; NRI Plugins v0.10.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=80d5e7a1" />
       <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=19f00094" />
 
@@ -15,7 +15,7 @@
   
         <script src="../../../_static/jquery.js?v=5d32c60e"></script>
         <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-        <script src="../../../_static/documentation_options.js?v=119b1565"></script>
+        <script src="../../../_static/documentation_options.js?v=8d3428ec"></script>
         <script src="../../../_static/doctools.js?v=9a2dae69"></script>
         <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../_static/js/theme.js"></script>
@@ -63,10 +63,14 @@
 <li class="toctree-l4"><a class="reference internal" href="#configuration">Configuration</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#assigning-a-container-to-a-balloon">Assigning a Container to a Balloon</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#pod-and-container-overrides-to-cpu-and-memory-pinning">Pod and Container Overrides to CPU and Memory Pinning</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#combining-balloons">Combining Balloons</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#prevent-creating-a-container">Prevent Creating a Container</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#reset-cpu-and-memory-pinning">Reset CPU and memory pinning</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#metrics-and-debugging">Metrics and Debugging</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="template.html">Template Policy</a></li>
+<li class="toctree-l3"><a class="reference internal" href="common-functionality.html">Common Functionality</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="../developers-guide/index.html">Developer’s Guide</a></li>
@@ -205,7 +209,7 @@ there is no resource pinning, the policy will not change that
 either. Example: preserve containers named “a” and “b”. As a
 result, the policy will not modify CPU or memory pinning of
 matching containers.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">ignore</span><span class="p">:</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">preserve</span><span class="p">:</span>
   <span class="n">matchExpressions</span><span class="p">:</span>
     <span class="o">-</span> <span class="n">key</span><span class="p">:</span> <span class="n">name</span>
       <span class="n">operator</span><span class="p">:</span> <span class="n">In</span>
@@ -391,6 +395,16 @@ instance, two balloons that generate heavy load on level 2 cache
 should get their CPUs from separate cache blocks for best
 performance. Every listed class must be specified in
 <code class="docutils literal notranslate"><span class="pre">loadClasses</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">components</span></code> is a list of components of a balloon. If a balloon
+consists of components, its CPUs are allocated by allocating CPUs
+for each component balloon separately, and then adding them up.
+See <a class="reference internal" href="#combining-balloons">combining balloons</a> for more details and
+an example. Properties of components in the list are:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">balloonType</span></code> specifies the name of the balloon type according
+to which CPUs are allocated to this component.</p></li>
+</ul>
+</li>
 </ul>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">loadClasses</span></code>: lists properties of loads that containers in balloons
@@ -446,6 +460,16 @@ class (kHz).</p></li>
 and assigned containers are readable through <code class="docutils literal notranslate"><span class="pre">/metrics</span></code> from the
 httpEndpoint.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">reportPeriod</span></code>: <code class="docutils literal notranslate"><span class="pre">/metrics</span></code> aggregation interval for polled metrics.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">metrics</span></code>: defines which metrics to collect.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">enabled</span></code>: a list of glob patterns that match metrics to collect.
+Example: <code class="docutils literal notranslate"><span class="pre">[&quot;policy&quot;]</span></code></p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">samplingRatePerMillion</span></code>: the number of samples to collect per million spans.
+Example: <code class="docutils literal notranslate"><span class="pre">100000</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">tracingCollector</span></code>: defines the external endpoint for tracing data collection.
+Example: <code class="docutils literal notranslate"><span class="pre">otlp-http://localhost:4318</span></code>.</p></li>
 </ul>
 </li>
 <li><p><code class="docutils literal notranslate"><span class="pre">agent</span></code>: controls communicating with the Kubernetes node agent and
@@ -456,6 +480,14 @@ resource topology zones in noderesourcetopologies custom
 resources. Moreover, showing containers assigned to balloons and
 their CPU/memory affinities can be enabled with
 <code class="docutils literal notranslate"><span class="pre">showContainersInNrt</span></code>. The default is <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">log</span></code>: contains the logging configuration for the policy.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">debug</span></code>: an array of components to enable debug logging for.
+Example: <code class="docutils literal notranslate"><span class="pre">[&quot;policy&quot;]</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">source</span></code>: set to <code class="docutils literal notranslate"><span class="pre">true</span></code> to prefix messages with the name of the logger
+source.</p></li>
 </ul>
 </li>
 </ul>
@@ -643,6 +675,122 @@ latter two for other containers in the pod. Supported types are “HBM”,
 </div>
 </section>
 </section>
+<section id="combining-balloons">
+<h2>Combining Balloons<a class="headerlink" href="#combining-balloons" title="Link to this heading"></a></h2>
+<p>Sometimes a container needs a set of CPUs where some CPUs have
+different properties or they are selected based on different criteria
+than other CPUs.</p>
+<p>This kind of a container needs to be assigned into a composite
+balloon. A composite balloon consists of component balloons.
+Specifying <code class="docutils literal notranslate"><span class="pre">components</span></code> in a balloon type makes it a composite balloon
+type. Composite balloons get their CPUs by combining CPUs of their
+components.</p>
+<p>Each component specifies its balloon type, that must be defined in the
+<code class="docutils literal notranslate"><span class="pre">balloonTypes</span></code> list. CPUs are allocated to the component based on its
+own balloon type configuration only. As CPUs are not allocated
+directly to composite balloons, CPU allocation parameters are not
+allowed in composite balloon types.</p>
+<p>When the policy creates new composite balloon, it creates hidden
+instances of balloons’s components, too. Resizing the composite
+balloon due to changes in its containers causes resizing these hidden
+instances.</p>
+<p>Example: allocate CPUs for distributed AI inference containers so
+that, depending on a balloon type, a container will get:</p>
+<ul class="simple">
+<li><p>equal number of CPUs from all 4 NUMA nodes in the system</p></li>
+<li><p>equal number of CPUs from both NUMA nodes on CPU package 0</p></li>
+<li><p>equal number of CPUs from both NUMA nodes on CPU package 1.</p></li>
+</ul>
+<p>Following balloon type configuration implements this. Containers can
+be assigned into balloons <code class="docutils literal notranslate"><span class="pre">balance-all-nodes</span></code>, <code class="docutils literal notranslate"><span class="pre">balance-pkg0-nodes</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">balance-pkg1-nodes</span></code>, respectively.</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="w">  </span><span class="nt">balloonTypes</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">balance-all-nodes</span>
+<span class="w">    </span><span class="nt">components</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">balloonType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">balance-pkg0-nodes</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">balloonType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">balance-pkg1-nodes</span>
+
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">balance-pkg0-nodes</span>
+<span class="w">    </span><span class="nt">components</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">balloonType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node0</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">balloonType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node1</span>
+
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">balance-pkg1-nodes</span>
+<span class="w">    </span><span class="nt">components</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">balloonType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node2</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">balloonType</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node3</span>
+
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node0</span>
+<span class="w">    </span><span class="nt">preferCloseToDevices</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/sys/devices/system/node/node0</span>
+
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node1</span>
+<span class="w">    </span><span class="nt">preferCloseToDevices</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/sys/devices/system/node/node1</span>
+
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node2</span>
+<span class="w">    </span><span class="nt">preferCloseToDevices</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/sys/devices/system/node/node2</span>
+
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node3</span>
+<span class="w">    </span><span class="nt">preferCloseToDevices</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/sys/devices/system/node/node3</span>
+</pre></div>
+</div>
+</section>
+<section id="prevent-creating-a-container">
+<h2>Prevent Creating a Container<a class="headerlink" href="#prevent-creating-a-container" title="Link to this heading"></a></h2>
+<p>Sometimes unwanted or unknown containers must not be created on a
+node, not even in the case that such a pod is scheduled on the node
+accidentally. This can be prevented by a policy that has a balloon type
+that is not able to run a container that matches to the type. One way
+to define such a balloon type is by specifying that instances of the
+type will never have enough CPUs to run any containers. That is, set
+<code class="docutils literal notranslate"><span class="pre">maxCPUs</span></code> and <code class="docutils literal notranslate"><span class="pre">minCPUs</span></code> to -1.</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">config.nri/v1alpha1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">BalloonsPolicy</span>
+<span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+<span class="w">  </span><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kube-system</span>
+<span class="nt">spec</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">balloonTypes</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">unknown-containers</span>
+<span class="w">    </span><span class="nt">maxCPUs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-1</span>
+<span class="w">    </span><span class="nt">minCPUs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-1</span>
+<span class="w">    </span><span class="nt">matchExpressions</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">name</span>
+<span class="w">      </span><span class="nt">operator</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NotIn</span>
+<span class="w">      </span><span class="nt">values</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">containerA</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">containerB</span>
+<span class="w">        </span><span class="l l-Scalar l-Scalar-Plain">...</span>
+</pre></div>
+</div>
+</section>
+<section id="reset-cpu-and-memory-pinning">
+<h2>Reset CPU and memory pinning<a class="headerlink" href="#reset-cpu-and-memory-pinning" title="Link to this heading"></a></h2>
+<p>CPU and memory pinning of all containers can be forcibly reset with
+the following policy. The policy assigns containers from all
+namespaces to the same “reserved” balloon instance, and allows them to
+use all other CPUs in the system, too.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">apiVersion</span><span class="p">:</span> <span class="n">config</span><span class="o">.</span><span class="n">nri</span><span class="o">/</span><span class="n">v1alpha1</span>
+<span class="n">kind</span><span class="p">:</span> <span class="n">BalloonsPolicy</span>
+<span class="n">metadata</span><span class="p">:</span>
+  <span class="n">name</span><span class="p">:</span> <span class="n">default</span>
+  <span class="n">namespace</span><span class="p">:</span> <span class="n">kube</span><span class="o">-</span><span class="n">system</span>
+<span class="n">spec</span><span class="p">:</span>
+  <span class="n">balloonTypes</span><span class="p">:</span>
+  <span class="o">-</span> <span class="n">name</span><span class="p">:</span> <span class="n">reserved</span>
+    <span class="n">namespaces</span><span class="p">:</span>
+    <span class="o">-</span> <span class="s2">&quot;*&quot;</span>
+    <span class="n">shareIdleCPUsInSame</span><span class="p">:</span> <span class="n">system</span>
+  <span class="n">reservedResources</span><span class="p">:</span>
+    <span class="n">cpu</span><span class="p">:</span> <span class="mi">1</span>
+  <span class="n">pinCPU</span><span class="p">:</span> <span class="n">true</span>
+  <span class="n">pinMemory</span><span class="p">:</span> <span class="n">true</span>
+</pre></div>
+</div>
+</section>
 <section id="metrics-and-debugging">
 <h2>Metrics and Debugging<a class="headerlink" href="#metrics-and-debugging" title="Link to this heading"></a></h2>
 <p>In order to enable more verbose logging and metrics exporting from the
@@ -657,8 +805,21 @@ nri-resource-policy global config:</p>
 <span class="w">  </span><span class="nt">metrics</span><span class="p">:</span>
 <span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="c1"># use &#39;*&#39; instead for all available metrics</span>
 <span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">policy</span>
-<span class="nt">logger</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">Debug</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">policy</span>
+<span class="nt">log</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">debug</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">policy</span><span class="w">     </span><span class="c1"># to follow policy&#39;s internal logic</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nri-plugin</span><span class="w"> </span><span class="c1"># to see what the policy saw and to hear what it said (there is a lot of it)</span>
+<span class="w">  </span><span class="nt">source</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</pre></div>
+</div>
+<p>Read metrics (assuming you can access podIPs directly from your network, otherwise use <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">port-forward</span></code>):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>for podip in $(kubectl get pod -n kube-system -l &quot;app.kubernetes.io/instance=nri-resource-policy-balloons&quot; -o=jsonpath=&#39;{.items[*].status.podIP}&#39;); do
+  curl -s http://$podip:8891/metrics
+done
+</pre></div>
+</div>
+<p>Read logs:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">kubectl</span> <span class="n">logs</span> <span class="o">-</span><span class="n">n</span> <span class="n">kube</span><span class="o">-</span><span class="n">system</span> <span class="o">-</span><span class="n">l</span> <span class="s2">&quot;app.kubernetes.io/instance=nri-resource-policy-balloons&quot;</span> <span class="o">--</span><span class="n">tail</span><span class="o">=-</span><span class="mi">1</span>
 </pre></div>
 </div>
 </section>
