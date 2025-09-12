@@ -137,10 +137,15 @@ prepare_worktree() {
         must-cd "$LOCAL_REPO"
     else
         must-cd "$CLONED_REPO"
-        if ! git remote -v | grep origin | grep -q "$REMOTE_REPO"; then
-            fatal "existing clone $CLONED_REPO has other origin than $REMOTE_REPO"
+        if ! git remote -v | grep -q "$REMOTE_REPO"; then
+            error "existing clone $CLONED_REPO has other origin than $REMOTE_REPO"
+            REMOTE="$(echo $REMOTE_REPO | sed 's:^.*github.com/::;s:/.*$::')"
+            git remote add "$REMOTE" "$REMOTE_REPO"
+        else
+            REMOTE=$(git remote -v | grep fetch | grep "$REMOTE_REPO" | \
+                          tr -s '\t ' ' ' | cut -d ' ' -f1)
         fi
-        if ! git fetch origin; then
+        if ! git fetch $REMOTE; then
             fatal "failed to fetch $REMOTE_REPO"
         fi
     fi
