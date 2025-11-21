@@ -98,6 +98,8 @@ func Start(m *http.ServeMux, options ...Option) error {
 
 	log.Info("starting metrics exporter...")
 
+	metrics.Configure(append(append([]string{}, enabled...), polled...))
+
 	g, err := metrics.NewGatherer(
 		metrics.WithNamespace(namespace),
 		metrics.WithPollInterval(reportPeriod),
@@ -115,6 +117,12 @@ func Start(m *http.ServeMux, options ...Option) error {
 	}
 	m.Handle("/metrics", promhttp.HandlerFor(g, handlerOpts))
 
+	if otel := metrics.Exporter(); otel != nil {
+		m.Handle("/otel", promhttp.Handler())
+	} else {
+		panic("no otel exporter available")
+	}
+
 	mux = m
 
 	return nil
@@ -129,6 +137,7 @@ func Stop() {
 	mux = nil
 	gatherer.Stop()
 	gatherer = nil
+	metrics.Provider("").Shutdown()
 }
 
 func Block() *MetricsBlock {
