@@ -15,9 +15,12 @@
 package policy
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	v1 "k8s.io/api/core/v1"
 
 	"github.com/containers/nri-plugins/pkg/metrics"
@@ -64,6 +67,7 @@ type (
 		Nodes   map[int]*NodeMetric
 		Cpus    map[int]*CpuMetric
 		Metrics []*prometheus.GaugeVec
+		Meters  []metric.Float64Gauge
 	}
 	NodeMetric struct {
 		Id             int
@@ -88,7 +92,10 @@ func (p *policy) newSystemCollector() *SystemCollector {
 		Nodes:   map[int]*NodeMetric{},
 		Cpus:    map[int]*CpuMetric{},
 		Metrics: make([]*prometheus.GaugeVec, metricsCount),
+		Meters:  make([]metric.Float64Gauge, metricsCount),
 	}
+
+	meter := metrics.Provider("policy").Meter("system", metrics.WithOmitSubsystem())
 
 	s.Metrics[nodeCapacity] = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -99,6 +106,19 @@ func (p *policy) newSystemCollector() *SystemCollector {
 			"node_id",
 		},
 	)
+
+	m, err := meter.Float64Gauge(
+		"mem.node.capacity",
+		metric.WithDescription("Capacity of the memory node."),
+		metric.WithUnit("bytes"),
+	)
+	if err != nil {
+		log.Errorf("failed to create mem_node_capacity meter: %v", err)
+		panic(err)
+	} else {
+		s.Meters[nodeCapacity] = m
+	}
+
 	s.Metrics[nodeUsage] = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "mem_node_usage",
@@ -108,6 +128,19 @@ func (p *policy) newSystemCollector() *SystemCollector {
 			"node_id",
 		},
 	)
+
+	m, err = meter.Float64Gauge(
+		"mem.node.usage",
+		metric.WithDescription("Usage of the memory node."),
+		metric.WithUnit("bytes"),
+	)
+	if err != nil {
+		log.Errorf("failed to create mem_node_usage meter: %v", err)
+		panic(err)
+	} else {
+		s.Meters[nodeUsage] = m
+	}
+
 	s.Metrics[nodeContainers] = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "mem_node_container_count",
@@ -117,6 +150,17 @@ func (p *policy) newSystemCollector() *SystemCollector {
 			"node_id",
 		},
 	)
+
+	m, err = meter.Float64Gauge(
+		"mem.node.container.count",
+		metric.WithDescription("Number of containers assigned to the memory node."),
+	)
+	if err != nil {
+		log.Errorf("failed to create mem_node_container_count meter: %v", err)
+	} else {
+		s.Meters[nodeContainers] = m
+	}
+
 	s.Metrics[cpuAllocation] = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "cpu_allocation",
@@ -126,6 +170,18 @@ func (p *policy) newSystemCollector() *SystemCollector {
 			"cpu_id",
 		},
 	)
+
+	m, err = meter.Float64Gauge(
+		"cpu.allocation",
+		metric.WithDescription("Total allocation of the CPU."),
+		metric.WithUnit("milli-cores"),
+	)
+	if err != nil {
+		log.Errorf("failed to create cpu_allocation meter: %v", err)
+	} else {
+		s.Meters[cpuAllocation] = m
+	}
+
 	s.Metrics[cpuContainers] = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "cpu_container_count",
@@ -135,6 +191,16 @@ func (p *policy) newSystemCollector() *SystemCollector {
 			"cpu_id",
 		},
 	)
+
+	m, err = meter.Float64Gauge(
+		"cpu.container.count",
+		metric.WithDescription("Number of containers assigned to the CPU."),
+	)
+	if err != nil {
+		log.Errorf("failed to create cpu_container_count meter: %v", err)
+	} else {
+		s.Meters[cpuContainers] = m
+	}
 
 	for _, id := range s.system.NodeIDs() {
 		var (
@@ -149,7 +215,16 @@ func (p *policy) newSystemCollector() *SystemCollector {
 			}
 		)
 		s.Nodes[id] = node
+
 		s.Metrics[nodeCapacity].WithLabelValues(node.IdLabel).Set(float64(node.Capacity))
+		s.Meters[nodeCapacity].Record(
+			context.Background(),
+			float64(node.Capacity),
+			metric.WithAttributes(
+				attribute.String("node_id", node.IdLabel),
+				attribute.String("node_type", node.Type),
+			),
+		)
 	}
 
 	for _, id := range s.system.CPUIDs() {
@@ -159,6 +234,8 @@ func (p *policy) newSystemCollector() *SystemCollector {
 		}
 		s.Cpus[id] = cpu
 	}
+
+	s.Update()
 
 	return s
 }
@@ -188,7 +265,6 @@ func (s *SystemCollector) Update() {
 	for _, n := range s.Nodes {
 		sys := s.system.Node(n.Id)
 		_, used := s.getMemInfo(sys)
-
 		n.Usage = used
 		n.ContainerCount = 0
 	}
@@ -229,10 +305,38 @@ func (s *SystemCollector) Update() {
 
 	for _, n := range s.Nodes {
 		s.Metrics[nodeUsage].WithLabelValues(n.IdLabel).Set(float64(n.Usage))
+		s.Meters[nodeUsage].Record(
+			context.Background(),
+			float64(n.Usage),
+			metric.WithAttributes(
+				attribute.String("node_id", n.IdLabel),
+			),
+		)
+		s.Meters[nodeContainers].Record(
+			context.Background(),
+			float64(n.ContainerCount),
+			metric.WithAttributes(
+				attribute.String("node_id", n.IdLabel),
+			),
+		)
 	}
 	for _, c := range s.Cpus {
 		s.Metrics[cpuAllocation].WithLabelValues(c.IdLabel).Set(float64(c.Allocation))
+		s.Meters[cpuAllocation].Record(
+			context.Background(),
+			float64(c.Allocation),
+			metric.WithAttributes(
+				attribute.String("cpu_id", c.IdLabel),
+			),
+		)
 		s.Metrics[cpuContainers].WithLabelValues(c.IdLabel).Set(float64(c.ContainerCount))
+		s.Meters[cpuContainers].Record(
+			context.Background(),
+			float64(c.ContainerCount),
+			metric.WithAttributes(
+				attribute.String("cpu_id", c.IdLabel),
+			),
+		)
 	}
 }
 
