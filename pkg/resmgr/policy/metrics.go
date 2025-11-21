@@ -29,28 +29,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
-type PolicyCollector struct {
-	policy *policy
-}
-
-func (p *policy) newPolicyCollector() *PolicyCollector {
-	return &PolicyCollector{
-		policy: p,
-	}
-}
-
-func (c *PolicyCollector) register() error {
-	return metrics.Register(c.policy.ActivePolicy(), c, metrics.WithGroup("policy"))
-}
-
-func (c *PolicyCollector) Describe(ch chan<- *prometheus.Desc) {
-	c.policy.active.GetMetrics().Describe(ch)
-}
-
-func (c *PolicyCollector) Collect(ch chan<- prometheus.Metric) {
-	c.policy.active.GetMetrics().Collect(ch)
-}
-
 const (
 	nodeCapacity = iota
 	nodeUsage
@@ -240,28 +218,11 @@ func (p *policy) newSystemCollector() *SystemCollector {
 	return s
 }
 
-func (s *SystemCollector) Describe(ch chan<- *prometheus.Desc) {
-	s.Metrics[nodeCapacity].Describe(ch)
-	s.Metrics[nodeUsage].Describe(ch)
-	s.Metrics[nodeContainers].Describe(ch)
-	s.Metrics[cpuAllocation].Describe(ch)
-	s.Metrics[cpuContainers].Describe(ch)
-}
-
-func (s *SystemCollector) Collect(ch chan<- prometheus.Metric) {
-	s.Update()
-	s.Metrics[nodeCapacity].Collect(ch)
-	s.Metrics[nodeUsage].Collect(ch)
-	s.Metrics[nodeContainers].Collect(ch)
-	s.Metrics[cpuAllocation].Collect(ch)
-	s.Metrics[cpuContainers].Collect(ch)
-}
-
-func (s *SystemCollector) register() error {
-	return metrics.Register("system", s, metrics.WithGroup("policy"))
-}
-
 func (s *SystemCollector) Update() {
+	if s == nil {
+		return
+	}
+
 	for _, n := range s.Nodes {
 		sys := s.system.Node(n.Id)
 		_, used := s.getMemInfo(sys)

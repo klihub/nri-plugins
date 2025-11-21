@@ -115,8 +115,6 @@ type Backend interface {
 	HandleEvent(*events.Policy) (bool, error)
 	// ExportResourceData provides resource data to export for the container.
 	ExportResourceData(cache.Container) map[string]string
-	// GetMetrics returns the policy-specific metrics collector.
-	GetMetrics() Metrics
 	// GetTopologyZones returns the policy/pool data for 'topology zone' CRDs.
 	GetTopologyZones() []*TopologyZone
 }
@@ -214,7 +212,6 @@ type policy struct {
 	cache    cache.Cache      // system state cache
 	active   Backend          // our active backend
 	system   system.System    // system/HW/topology info
-	pcollect *PolicyCollector // policy metrics collector
 	scollect *SystemCollector // system metrics collector
 }
 
@@ -237,17 +234,7 @@ func NewPolicy(backend Backend, cache cache.Cache, o *Options) (Policy, error) {
 	}
 	p.system = sys
 
-	pcollect := p.newPolicyCollector()
-	if err := pcollect.register(); err != nil {
-		return nil, policyError("failed to register policy collector: %v", err)
-	}
-	p.pcollect = pcollect
-
-	scollect := p.newSystemCollector()
-	if err = scollect.register(); err != nil {
-		return nil, policyError("failed to register system collector: %v", err)
-	}
-	p.scollect = scollect
+	p.scollect = p.newSystemCollector()
 
 	return p, nil
 }
@@ -277,26 +264,31 @@ func (p *policy) Start(cfg interface{}) error {
 
 // Reconfigure the policy.
 func (p *policy) Reconfigure(cfg interface{}) error {
+	p.scollect = p.newSystemCollector()
 	return p.active.Reconfigure(cfg)
 }
 
 // Sync synchronizes the active policy state.
 func (p *policy) Sync(add []cache.Container, del []cache.Container) error {
+	defer p.scollect.Update()
 	return p.active.Sync(add, del)
 }
 
 // AllocateResources allocates resources for a container.
 func (p *policy) AllocateResources(c cache.Container) error {
+	defer p.scollect.Update()
 	return p.active.AllocateResources(c)
 }
 
 // ReleaseResources release resources of a container.
 func (p *policy) ReleaseResources(c cache.Container) error {
+	defer p.scollect.Update()
 	return p.active.ReleaseResources(c)
 }
 
 // UpdateResources updates resource allocations of a container.
 func (p *policy) UpdateResources(c cache.Container) error {
+	defer p.scollect.Update()
 	return p.active.UpdateResources(c)
 }
 
