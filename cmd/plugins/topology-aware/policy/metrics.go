@@ -15,9 +15,14 @@
 package topologyaware
 
 import (
+	"context"
 	"slices"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/containers/nri-plugins/pkg/metrics"
 	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 	policyapi "github.com/containers/nri-plugins/pkg/resmgr/policy"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
@@ -29,6 +34,7 @@ type TopologyAwareMetrics struct {
 	ZoneNames []string
 	Zones     map[string]*Zone
 	Metrics   Metrics
+	Meters    Meters
 }
 
 type Zone struct {
@@ -55,6 +61,18 @@ type Metrics struct {
 	memAvailable         *prometheus.GaugeVec
 	containerCount       *prometheus.GaugeVec
 	sharedContainerCount *prometheus.GaugeVec
+}
+
+type Meters struct {
+	zone                 metric.Int64Gauge
+	cpuSharedCapacity    metric.Int64Gauge
+	cpuSharedAssigned    metric.Float64Gauge
+	cpuSharedAvailable   metric.Float64Gauge
+	memCapacity          metric.Int64Gauge
+	memAssigned          metric.Int64Gauge
+	memAvailable         metric.Int64Gauge
+	containerCount       metric.Int64Gauge
+	sharedContainerCount metric.Int64Gauge
 }
 
 const (
@@ -171,6 +189,52 @@ func (p *policy) NewTopologyAwareMetrics() *TopologyAwareMetrics {
 		},
 	}
 
+	meter := metrics.Provider("policy").Meter(metricsSubsystem)
+
+	m.Meters.zone, _ = meter.Int64Gauge(
+		"zone.cpu.capacity",
+		metric.WithDescription("A topology zone of CPUs."),
+		metric.WithUnit("cores"),
+	)
+	m.Meters.cpuSharedCapacity, _ = meter.Int64Gauge(
+		"zone.cpu.shared,capacity",
+		metric.WithDescription("Capacity of shared CPU pool of a topology zone."),
+		metric.WithUnit("cores"),
+	)
+	m.Meters.cpuSharedAssigned, _ = meter.Float64Gauge(
+		"zone.cpu.shared.assigned",
+		metric.WithDescription("Assigned amount of shared CPU pool of a topology zone."),
+		metric.WithUnit("cores"),
+	)
+	m.Meters.cpuSharedAvailable, _ = meter.Float64Gauge(
+		"zone.cpu.shared.available",
+		metric.WithDescription("Available amount of shared CPU pool of a topology zone."),
+		metric.WithUnit("cores"),
+	)
+	m.Meters.memCapacity, _ = meter.Int64Gauge(
+		"zone.mem.capacity",
+		metric.WithDescription("Memory capacity of a topology zone."),
+		metric.WithUnit("bytes"),
+	)
+	m.Meters.memAssigned, _ = meter.Int64Gauge(
+		"zone.mem.assigned",
+		metric.WithDescription("Amount of assigned memory of a topology zone."),
+		metric.WithUnit("bytes"),
+	)
+	m.Meters.memAvailable, _ = meter.Int64Gauge(
+		"zone.mem.available",
+		metric.WithDescription("Amount of available memory of a topology zone."),
+		metric.WithUnit("bytes"),
+	)
+	m.Meters.containerCount, _ = meter.Int64Gauge(
+		"zone.container.count",
+		metric.WithDescription("Number of containers assigned to a topology zone."),
+	)
+	m.Meters.sharedContainerCount, _ = meter.Int64Gauge(
+		"zone.shared.container.count",
+		metric.WithDescription("Number of containers in the shared CPU pool of a topology zone."),
+	)
+
 	for _, pool := range p.pools {
 		var (
 			name = pool.Name()
@@ -198,6 +262,25 @@ func (p *policy) NewTopologyAwareMetrics() *TopologyAwareMetrics {
 			zone.Name,
 			zone.Mems.String(),
 		).Set(float64(zone.MemCapacity))
+
+		m.Meters.zone.Record(
+			context.Background(),
+			int64(zone.Cpus.Size()),
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+				attribute.String("cpus", zone.Cpus.String()),
+				attribute.String("mems", zone.Mems.String()),
+			),
+		)
+
+		m.Meters.memCapacity.Record(
+			context.Background(),
+			zone.MemCapacity,
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+				attribute.String("mems", zone.Mems.String()),
+			),
+		)
 	}
 
 	slices.SortFunc(m.ZoneNames, func(a, b string) int {
@@ -320,5 +403,66 @@ func (m *TopologyAwareMetrics) Update() {
 		m.Metrics.sharedContainerCount.WithLabelValues(
 			zone.Name,
 		).Set(float64(zone.SharedContainerCount))
+
+		m.Meters.cpuSharedCapacity.Record(
+			context.Background(),
+			int64(zone.SharedPool.Size()),
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+				attribute.String("cpus", zone.SharedPool.String()),
+			),
+		)
+
+		m.Meters.cpuSharedAssigned.Record(
+			context.Background(),
+			float64(zone.SharedAssigned)/1000.0,
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+				attribute.String("cpus", zone.SharedPool.String()),
+			),
+		)
+
+		m.Meters.cpuSharedAvailable.Record(
+			context.Background(),
+			float64(zone.SharedAvailable)/1000.0,
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+				attribute.String("cpus", zone.SharedPool.String()),
+			),
+		)
+
+		m.Meters.memAssigned.Record(
+			context.Background(),
+			zone.MemAssigned,
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+				attribute.String("mems", zone.Mems.MemsetString()),
+			),
+		)
+
+		m.Meters.memAvailable.Record(
+			context.Background(),
+			zone.MemAvailable,
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+				attribute.String("mems", zone.Mems.MemsetString()),
+			),
+		)
+
+		m.Meters.containerCount.Record(
+			context.Background(),
+			int64(zone.ContainerCount),
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+			),
+		)
+
+		m.Meters.sharedContainerCount.Record(
+			context.Background(),
+			int64(zone.SharedContainerCount),
+			metric.WithAttributes(
+				attribute.String("zone", zone.Name),
+			),
+		)
 	}
 }
