@@ -16,6 +16,7 @@ package topologyaware
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -24,17 +25,22 @@ import (
 
 	"github.com/containers/nri-plugins/pkg/metrics"
 	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
-	policyapi "github.com/containers/nri-plugins/pkg/resmgr/policy"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 type TopologyAwareMetrics struct {
-	p         *policy
-	ZoneNames []string
-	Zones     map[string]*Zone
-	Metrics   Metrics
-	Meters    Meters
+	p                    *policy
+	ZoneNames            []string
+	Zones                map[string]*Zone
+	zone                 metric.Int64Gauge
+	cpuSharedCapacity    metric.Int64Gauge
+	cpuSharedAssigned    metric.Float64Gauge
+	cpuSharedAvailable   metric.Float64Gauge
+	memCapacity          metric.Int64Gauge
+	memAssigned          metric.Int64Gauge
+	memAvailable         metric.Int64Gauge
+	containerCount       metric.Int64Gauge
+	sharedContainerCount metric.Int64Gauge
 }
 
 type Zone struct {
@@ -51,189 +57,98 @@ type Zone struct {
 	SharedContainerCount int
 }
 
-type Metrics struct {
-	zone                 *prometheus.GaugeVec
-	cpuSharedCapacity    *prometheus.GaugeVec
-	cpuSharedAssigned    *prometheus.GaugeVec
-	cpuSharedAvailable   *prometheus.GaugeVec
-	memCapacity          *prometheus.GaugeVec
-	memAssigned          *prometheus.GaugeVec
-	memAvailable         *prometheus.GaugeVec
-	containerCount       *prometheus.GaugeVec
-	sharedContainerCount *prometheus.GaugeVec
-}
-
-type Meters struct {
-	zone                 metric.Int64Gauge
-	cpuSharedCapacity    metric.Int64Gauge
-	cpuSharedAssigned    metric.Float64Gauge
-	cpuSharedAvailable   metric.Float64Gauge
-	memCapacity          metric.Int64Gauge
-	memAssigned          metric.Int64Gauge
-	memAvailable         metric.Int64Gauge
-	containerCount       metric.Int64Gauge
-	sharedContainerCount metric.Int64Gauge
-}
-
 const (
 	metricsSubsystem = "topologyaware"
 )
 
-func (p *policy) GetMetrics() policyapi.Metrics {
-	return p.metrics
-}
+func (p *policy) NewTopologyAwareMetrics() (*TopologyAwareMetrics, error) {
+	var (
+		meter = metrics.Provider("policy").Meter(metricsSubsystem)
+		m     = &TopologyAwareMetrics{
+			p:     p,
+			Zones: make(map[string]*Zone),
+		}
+		err error
+	)
 
-func (p *policy) NewTopologyAwareMetrics() *TopologyAwareMetrics {
-	m := &TopologyAwareMetrics{
-		p:     p,
-		Zones: make(map[string]*Zone),
-		Metrics: Metrics{
-			zone: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_cpu_capacity",
-					Help:      "A topology zone of CPUs.",
-				},
-				[]string{
-					"zone",
-					"cpus",
-					"mems",
-				},
-			),
-			cpuSharedCapacity: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_cpu_shared_capacity",
-					Help:      "Capacity of shared CPU pool of a topology zone.",
-				},
-				[]string{
-					"zone",
-					"cpus",
-				},
-			),
-			cpuSharedAssigned: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_cpu_shared_assigned",
-					Help:      "Assigned amount of shared CPU pool of a topology zone.",
-				},
-				[]string{
-					"zone",
-					"cpus",
-				},
-			),
-			cpuSharedAvailable: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_cpu_shared_available",
-					Help:      "Available amount of shared CPU pool of a topology zone.",
-				},
-				[]string{
-					"zone",
-					"cpus",
-				},
-			),
-			memCapacity: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_mem_capacity",
-					Help:      "Memory capacity of a topology zone.",
-				},
-				[]string{
-					"zone",
-					"mems",
-				},
-			),
-			memAssigned: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_mem_assigned",
-					Help:      "Amount of assigned memory of a topology zone.",
-				},
-				[]string{
-					"zone",
-					"mems",
-				},
-			),
-			memAvailable: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_mem_available",
-					Help:      "Amount of available memory of a topology zone.",
-				},
-				[]string{
-					"zone",
-					"mems",
-				},
-			),
-			containerCount: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_container_count",
-					Help:      "Number of containers assigned to a topology zone.",
-				},
-				[]string{
-					"zone",
-				},
-			),
-			sharedContainerCount: prometheus.NewGaugeVec(
-				prometheus.GaugeOpts{
-					Subsystem: metricsSubsystem,
-					Name:      "zone_shared_container_count",
-					Help:      "Number of containers in the shared CPU pool of a topology zone.",
-				},
-				[]string{
-					"zone",
-				},
-			),
-		},
-	}
-
-	meter := metrics.Provider("policy").Meter(metricsSubsystem)
-
-	m.Meters.zone, _ = meter.Int64Gauge(
+	m.zone, err = meter.Int64Gauge(
 		"zone.cpu.capacity",
 		metric.WithDescription("A topology zone of CPUs."),
 		metric.WithUnit("cores"),
 	)
-	m.Meters.cpuSharedCapacity, _ = meter.Int64Gauge(
-		"zone.cpu.shared,capacity",
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.cpu.capacity meter: %w", err)
+	}
+
+	m.cpuSharedCapacity, err = meter.Int64Gauge(
+		"zone.cpu.shared.capacity",
 		metric.WithDescription("Capacity of shared CPU pool of a topology zone."),
 		metric.WithUnit("cores"),
 	)
-	m.Meters.cpuSharedAssigned, _ = meter.Float64Gauge(
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.cpu.shared.capacity meter: %w", err)
+	}
+
+	m.cpuSharedAssigned, err = meter.Float64Gauge(
 		"zone.cpu.shared.assigned",
 		metric.WithDescription("Assigned amount of shared CPU pool of a topology zone."),
 		metric.WithUnit("cores"),
 	)
-	m.Meters.cpuSharedAvailable, _ = meter.Float64Gauge(
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.cpu.shared.assigned meter: %w", err)
+	}
+
+	m.cpuSharedAvailable, err = meter.Float64Gauge(
 		"zone.cpu.shared.available",
 		metric.WithDescription("Available amount of shared CPU pool of a topology zone."),
 		metric.WithUnit("cores"),
 	)
-	m.Meters.memCapacity, _ = meter.Int64Gauge(
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.cpu.shared.available meter: %w", err)
+	}
+
+	m.memCapacity, err = meter.Int64Gauge(
 		"zone.mem.capacity",
 		metric.WithDescription("Memory capacity of a topology zone."),
 		metric.WithUnit("bytes"),
 	)
-	m.Meters.memAssigned, _ = meter.Int64Gauge(
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.mem.capacity meter: %w", err)
+	}
+
+	m.memAssigned, err = meter.Int64Gauge(
 		"zone.mem.assigned",
 		metric.WithDescription("Amount of assigned memory of a topology zone."),
 		metric.WithUnit("bytes"),
 	)
-	m.Meters.memAvailable, _ = meter.Int64Gauge(
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.mem.assigned meter: %w", err)
+	}
+
+	m.memAvailable, err = meter.Int64Gauge(
 		"zone.mem.available",
 		metric.WithDescription("Amount of available memory of a topology zone."),
 		metric.WithUnit("bytes"),
 	)
-	m.Meters.containerCount, _ = meter.Int64Gauge(
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.mem.available meter: %w", err)
+	}
+
+	m.containerCount, err = meter.Int64Gauge(
 		"zone.container.count",
 		metric.WithDescription("Number of containers assigned to a topology zone."),
 	)
-	m.Meters.sharedContainerCount, _ = meter.Int64Gauge(
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.container.count meter: %w", err)
+	}
+
+	m.sharedContainerCount, err = meter.Int64Gauge(
 		"zone.shared.container.count",
 		metric.WithDescription("Number of containers in the shared CPU pool of a topology zone."),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create zone.shared.container.count meter: %w", err)
+	}
 
 	for _, pool := range p.pools {
 		var (
@@ -252,18 +167,7 @@ func (p *policy) NewTopologyAwareMetrics() *TopologyAwareMetrics {
 		m.Zones[name] = zone
 		m.ZoneNames = append(m.ZoneNames, name)
 
-		m.Metrics.zone.WithLabelValues(
-			zone.Name,
-			zone.Cpus.String(),
-			zone.Mems.String(),
-		).Set(float64(zone.Cpus.Size()))
-
-		m.Metrics.memCapacity.WithLabelValues(
-			zone.Name,
-			zone.Mems.String(),
-		).Set(float64(zone.MemCapacity))
-
-		m.Meters.zone.Record(
+		m.zone.Record(
 			context.Background(),
 			int64(zone.Cpus.Size()),
 			metric.WithAttributes(
@@ -273,7 +177,7 @@ func (p *policy) NewTopologyAwareMetrics() *TopologyAwareMetrics {
 			),
 		)
 
-		m.Meters.memCapacity.Record(
+		m.memCapacity.Record(
 			context.Background(),
 			zone.MemCapacity,
 			metric.WithAttributes(
@@ -293,48 +197,17 @@ func (p *policy) NewTopologyAwareMetrics() *TopologyAwareMetrics {
 
 	m.Update()
 
-	return m
-}
-
-func (m *TopologyAwareMetrics) Describe(ch chan<- *prometheus.Desc) {
-	if m == nil {
-		return
-	}
-
-	m.Metrics.zone.Describe(ch)
-	m.Metrics.cpuSharedCapacity.Describe(ch)
-	m.Metrics.cpuSharedAssigned.Describe(ch)
-	m.Metrics.cpuSharedAvailable.Describe(ch)
-	m.Metrics.memCapacity.Describe(ch)
-	m.Metrics.memAssigned.Describe(ch)
-	m.Metrics.memAvailable.Describe(ch)
-	m.Metrics.containerCount.Describe(ch)
-	m.Metrics.sharedContainerCount.Describe(ch)
-}
-
-func (m *TopologyAwareMetrics) Collect(ch chan<- prometheus.Metric) {
-	if m == nil {
-		return
-	}
-
-	m.Update()
-
-	m.Metrics.zone.Collect(ch)
-	m.Metrics.cpuSharedCapacity.Collect(ch)
-	m.Metrics.cpuSharedAssigned.Collect(ch)
-	m.Metrics.cpuSharedAvailable.Collect(ch)
-	m.Metrics.memCapacity.Collect(ch)
-	m.Metrics.memAssigned.Collect(ch)
-	m.Metrics.memAvailable.Collect(ch)
-	m.Metrics.containerCount.Collect(ch)
-	m.Metrics.sharedContainerCount.Collect(ch)
+	return m, nil
 }
 
 // Update updates our metrics.
 func (m *TopologyAwareMetrics) Update() {
 	if m == nil {
+		log.Infof("*** nil metrics, not updating...")
 		return
 	}
+
+	log.Infof("*** updating topology-aware metrics...")
 
 	p := m.p
 	for _, pool := range p.pools {
@@ -371,40 +244,7 @@ func (m *TopologyAwareMetrics) Update() {
 		zone.ContainerCount = containers
 		zone.SharedContainerCount = sharedctrs
 
-		m.Metrics.cpuSharedCapacity.WithLabelValues(
-			zone.Name,
-			zone.SharedPool.String(),
-		).Set(float64(zone.SharedPool.Size()))
-
-		m.Metrics.cpuSharedAssigned.WithLabelValues(
-			zone.Name,
-			zone.SharedPool.String(),
-		).Set(float64(zone.SharedAssigned) / 1000.0)
-
-		m.Metrics.cpuSharedAvailable.WithLabelValues(
-			zone.Name,
-			zone.SharedPool.String(),
-		).Set(float64(zone.SharedAvailable) / 1000.0)
-
-		m.Metrics.memAssigned.WithLabelValues(
-			zone.Name,
-			zone.Mems.MemsetString(),
-		).Set(float64(zone.MemAssigned))
-
-		m.Metrics.memAvailable.WithLabelValues(
-			zone.Name,
-			zone.Mems.MemsetString(),
-		).Set(float64(zone.MemAvailable))
-
-		m.Metrics.containerCount.WithLabelValues(
-			zone.Name,
-		).Set(float64(zone.ContainerCount))
-
-		m.Metrics.sharedContainerCount.WithLabelValues(
-			zone.Name,
-		).Set(float64(zone.SharedContainerCount))
-
-		m.Meters.cpuSharedCapacity.Record(
+		m.cpuSharedCapacity.Record(
 			context.Background(),
 			int64(zone.SharedPool.Size()),
 			metric.WithAttributes(
@@ -413,7 +253,7 @@ func (m *TopologyAwareMetrics) Update() {
 			),
 		)
 
-		m.Meters.cpuSharedAssigned.Record(
+		m.cpuSharedAssigned.Record(
 			context.Background(),
 			float64(zone.SharedAssigned)/1000.0,
 			metric.WithAttributes(
@@ -422,7 +262,7 @@ func (m *TopologyAwareMetrics) Update() {
 			),
 		)
 
-		m.Meters.cpuSharedAvailable.Record(
+		m.cpuSharedAvailable.Record(
 			context.Background(),
 			float64(zone.SharedAvailable)/1000.0,
 			metric.WithAttributes(
@@ -431,7 +271,7 @@ func (m *TopologyAwareMetrics) Update() {
 			),
 		)
 
-		m.Meters.memAssigned.Record(
+		m.memAssigned.Record(
 			context.Background(),
 			zone.MemAssigned,
 			metric.WithAttributes(
@@ -440,7 +280,7 @@ func (m *TopologyAwareMetrics) Update() {
 			),
 		)
 
-		m.Meters.memAvailable.Record(
+		m.memAvailable.Record(
 			context.Background(),
 			zone.MemAvailable,
 			metric.WithAttributes(
@@ -449,7 +289,7 @@ func (m *TopologyAwareMetrics) Update() {
 			),
 		)
 
-		m.Meters.containerCount.Record(
+		m.containerCount.Record(
 			context.Background(),
 			int64(zone.ContainerCount),
 			metric.WithAttributes(
@@ -457,7 +297,7 @@ func (m *TopologyAwareMetrics) Update() {
 			),
 		)
 
-		m.Meters.sharedContainerCount.Record(
+		m.sharedContainerCount.Record(
 			context.Background(),
 			int64(zone.SharedContainerCount),
 			metric.WithAttributes(
