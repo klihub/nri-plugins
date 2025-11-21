@@ -234,8 +234,6 @@ func NewPolicy(backend Backend, cache cache.Cache, o *Options) (Policy, error) {
 	}
 	p.system = sys
 
-	p.scollect = p.newSystemCollector()
-
 	return p, nil
 }
 
@@ -259,12 +257,22 @@ func (p *policy) Start(cfg interface{}) error {
 		return err
 	}
 
+	scollect, err := p.newSystemCollector()
+	if err != nil {
+		return err
+	}
+	p.scollect = scollect
+
 	return p.active.Start()
 }
 
 // Reconfigure the policy.
 func (p *policy) Reconfigure(cfg interface{}) error {
-	p.scollect = p.newSystemCollector()
+	scollect, err := p.newSystemCollector()
+	if err != nil {
+		return err
+	}
+	p.scollect = scollect
 	return p.active.Reconfigure(cfg)
 }
 
