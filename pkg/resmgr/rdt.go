@@ -16,7 +16,6 @@ package resmgr
 
 import (
 	"fmt"
-	"log/slog"
 
 	"github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/control/rdt"
 	logger "github.com/containers/nri-plugins/pkg/log"
@@ -33,8 +32,6 @@ type rdtControl struct {
 }
 
 func newRdtControl(resmgr *resmgr, hostRoot string) *rdtControl {
-	slog.SetDefault(slog.New(rdtlog.SlogHandler()))
-
 	if hostRoot != "" {
 		rdt.SetPrefix(opt.HostRoot)
 	}

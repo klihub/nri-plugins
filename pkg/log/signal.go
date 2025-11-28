@@ -24,28 +24,22 @@ var signals chan os.Signal
 
 // SetupDebugToggleSignal sets up a signal handler to toggle full debugging on/off.
 func SetupDebugToggleSignal(sig os.Signal) {
-	log.Lock()
-	defer log.Unlock()
-
 	clearDebugToggleSignal()
 
 	signals = make(chan os.Signal, 1)
 	signal.Notify(signals, sig)
 
 	go func(sig <-chan os.Signal) {
-		state := map[bool]string{false: "off", true: "on"}
+		state := false
 		for {
 			<-sig
-			log.forced = !log.forced
-			deflog.Warn("forced full debugging is now %s...", state[log.forced])
+			deflog.Warn("forced full debugging is now %v...", state)
 		}
 	}(signals)
 }
 
 // ClearDebugToggleSignal removes any signal handlers for toggling debug on/off.
 func ClearDebugToggleSignal() {
-	log.Lock()
-	defer log.Unlock()
 	clearDebugToggleSignal()
 }
 
