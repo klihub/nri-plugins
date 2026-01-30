@@ -23,13 +23,16 @@ jobs:
         go-version-file: go.mod
     - name: Install build dependencies
       run: |
-        pip3 install --user -r docs/requirements.txt
-        echo "`python3 -m site --user-base`/bin" >> $GITHUB_PATH
+        mkdir -p build
+        python3 -m venv ./build/docs
+        . ./build/docs/bin/activate
+        ./build/docs/bin/pip3 install -r docs/requirements.txt
 
     - name: Add docs from this revision to gh-pages
       run: |
         git config user.name "Github"
         git config user.email "no-reply@github.com"
+        . ./build/docs/bin/activate
         ./scripts/build/update-gh-pages.sh
 
     - name: Publish/push to gh-pages
@@ -37,4 +40,4 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        git push https://${GITHUB_ACTOR}:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git gh-pages
+        git push origin gh-pages
