@@ -47,6 +47,8 @@ const (
 	keySchedulingClass = "scheduling-class." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for isolated CPU preference
 	preferIsolatedCPUsKey = "prefer-isolated-cpus" + "." + kubernetes.ResmgrKeyNamespace
+	// effective annotation key for strict isolated CPU preference
+	strictPreferIsolatedCPUsKey = "require-isolated-cpus" + "." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for shared CPU preference
 	preferSharedCPUsKey = "prefer-shared-cpus" + "." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for memory type preference
@@ -129,8 +131,12 @@ func boolConfigPreference(ptr *bool) (bool, prefKind) {
 // for the given container. If an effective annotation is not found, it uses
 // the global configuration for isolated CPU preference.
 func isolatedCPUsPreference(pod cache.Pod, container cache.Container) (bool, prefKind) {
-	key := preferIsolatedCPUsKey
+	key := strictPreferIsolatedCPUsKey
 	value, ok := pod.GetEffectiveAnnotation(key, container.GetName())
+	if !ok {
+		key = strictPreferIsolatedCPUsKey
+		value, ok = pod.GetEffectiveAnnotation(key, container.GetName())
+	}
 	if !ok {
 		return boolConfigPreference(opt.PreferIsolated)
 	}
@@ -145,6 +151,12 @@ func isolatedCPUsPreference(pod cache.Pod, container cache.Container) (bool, pre
 	log.Debug("%s: effective CPU isolation preference %v", container.PrettyName(), preference)
 
 	return preference, prefAnnotated
+}
+
+// strictIsolatedCPUsPreference returns true if isolated CPU allocation is required.
+func strictIsolatedCPUsPreference(pod cache.Pod, container cache.Container) bool {
+	_, ok := pod.GetEffectiveAnnotation(strictPreferIsolatedCPUsKey, container.GetName())
+	return ok
 }
 
 // sharedCPUsPreference returns whether shared CPU allocation is preferred for
