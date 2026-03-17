@@ -30,6 +30,10 @@ func boolPtr(v *bool) bool {
 	return false
 }
 
+const (
+	preferIsolatedCPUsKey = "prefer-" + isolatedCPUsKey
+)
+
 func TestPodIsolationPreference(t *testing.T) {
 	tcases := []struct {
 		name            string

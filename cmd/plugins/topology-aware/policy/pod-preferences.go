@@ -46,9 +46,7 @@ const (
 	// annotation key for scheduling class
 	keySchedulingClass = "scheduling-class." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for isolated CPU preference
-	preferIsolatedCPUsKey = "prefer-isolated-cpus" + "." + kubernetes.ResmgrKeyNamespace
-	// effective annotation key for strict isolated CPU preference
-	strictPreferIsolatedCPUsKey = "require-isolated-cpus" + "." + kubernetes.ResmgrKeyNamespace
+	isolatedCPUsKey = "isolated-cpus" + "." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for shared CPU preference
 	preferSharedCPUsKey = "prefer-shared-cpus" + "." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for memory type preference
@@ -131,41 +129,38 @@ func boolConfigPreference(ptr *bool) (bool, prefKind) {
 // for the given container. If an effective annotation is not found, it uses
 // the global configuration for isolated CPU preference.
 func isolatedCPUsPreference(pod cache.Pod, container cache.Container) (bool, prefKind) {
-	sKey := strictPreferIsolatedCPUsKey
-	sVal, sScope, sOk := pod.QueryEffectiveAnnotation(sKey, container.GetName())
+	var (
+		base      = isolatedCPUsKey
+		modifiers = cache.PreferredOrRequiredOrNoModifier
+	)
 
-	pKey := preferIsolatedCPUsKey
-	pVal, pScope, pOk := pod.QueryEffectiveAnnotation(pKey, container.GetName())
-
-	key, value := "", ""
-
-	switch {
-	case !sOk && !pOk:
+	val, _, _, ok := container.QueryEffectiveAnnotation(base, modifiers)
+	if !ok {
 		return boolConfigPreference(opt.PreferIsolated)
-	case (sOk && !pOk) || sScope <= pScope:
-		key, value = sKey, sVal
-	default: // case (!sOk && pOk) || pScope < sScope:
-		key, value = pKey, pVal
 	}
 
-	preference, err := strconv.ParseBool(value)
+	preference, err := strconv.ParseBool(val)
 	if err != nil {
-		log.Error("invalid CPU isolation preference annotation (%q, %q): %v",
-			key, value, err)
+		log.Error("invalid annotated CPU isolation %q: %v", val, err)
 		return boolConfigPreference(opt.PreferIsolated)
 	}
 
-	log.Debug("%s: effective CPU isolation preference %v", container.PrettyName(), preference)
+	log.Debug("%s: effective CPU isolation preference %v",
+		container.PrettyName(), preference)
 
 	return preference, prefAnnotated
 }
 
 // strictIsolatedCPUsPreference returns true if isolated CPU allocation is required.
 func strictIsolatedCPUsPreference(pod cache.Pod, container cache.Container) bool {
-	_, sScope, sOk := pod.QueryEffectiveAnnotation(strictPreferIsolatedCPUsKey, container.GetName())
-	_, pScope, pOk := pod.QueryEffectiveAnnotation(preferIsolatedCPUsKey, container.GetName())
+	var (
+		base      = isolatedCPUsKey
+		modifiers = cache.PreferredOrRequiredOrNoModifier
+	)
 
-	return (sOk && !pOk) || (sOk && pOk && sScope <= pScope)
+	_, _, mod, ok := container.QueryEffectiveAnnotation(base, modifiers)
+
+	return ok && mod == cache.RequireModifier
 }
 
 // sharedCPUsPreference returns whether shared CPU allocation is preferred for

@@ -433,12 +433,12 @@ func (m *mockContainer) GetEffectiveAnnotation(key string) (string, bool) {
 	}
 	return pod.GetEffectiveAnnotation(key, m.name)
 }
-func (m *mockContainer) QueryEffectiveAnnotation(key string) (string, cache.AnnotationScope, bool) {
+func (m *mockContainer) QueryEffectiveAnnotation(key string, modifiers cache.AnnotationModifiers) (string, cache.AnnotationScope, cache.AnnotationModifier, bool) {
 	pod, ok := m.GetPod()
 	if !ok {
-		return "", cache.UnscopedAnnotation, false
+		return "", cache.UnscopedAnnotation, cache.NoModifier, false
 	}
-	return pod.QueryEffectiveAnnotation(key, m.name)
+	return pod.QueryEffectiveAnnotation(key, m.name, modifiers)
 }
 func (m *mockContainer) EvalKey(string) interface{} {
 	panic("unimplemented")
@@ -660,15 +660,15 @@ func (m *mockPod) GetEffectiveAnnotation(key, container string) (string, bool) {
 	v, ok := m.annotations[key]
 	return v, ok
 }
-func (m *mockPod) QueryEffectiveAnnotation(key, container string) (string, cache.AnnotationScope, bool) {
+func (m *mockPod) QueryEffectiveAnnotation(key, container string, modifiers cache.AnnotationModifiers) (string, cache.AnnotationScope, cache.AnnotationModifier, bool) {
 	if v, ok := m.annotations[key+"/container."+container]; ok {
-		return v, cache.ContainerScopedAnnotation, true
+		return v, cache.ContainerScopedAnnotation, cache.NoModifier, true
 	}
 	if v, ok := m.annotations[key+"/pod"]; ok {
-		return v, cache.PodScopedAnnotation, true
+		return v, cache.PodScopedAnnotation, cache.NoModifier, true
 	}
 	v, ok := m.annotations[key]
-	return v, cache.UnscopedAnnotation, ok
+	return v, cache.UnscopedAnnotation, cache.NoModifier, ok
 }
 func (m *mockPod) GetContainerAffinity(string) ([]*cache.Affinity, error) {
 	panic("unimplemented")

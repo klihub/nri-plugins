@@ -15,6 +15,8 @@
 package cache
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -121,20 +123,69 @@ func (p *pod) GetResmgrAnnotation(key string) (string, bool) {
 }
 
 func (p *pod) GetEffectiveAnnotation(key, container string) (string, bool) {
-	value, _, ok := p.QueryEffectiveAnnotation(key, container)
+	value, _, _, ok := p.QueryEffectiveAnnotation(key, container, nil)
 	return value, ok
 }
 
-func (p *pod) QueryEffectiveAnnotation(key, container string) (string, AnnotationScope, bool) {
-	annotations := p.Pod.GetAnnotations()
-	if v, ok := annotations[key+"/container."+container]; ok {
-		return v, ContainerScopedAnnotation, true
+func (p *pod) QueryEffectiveAnnotation(base, container string, modifiers AnnotationModifiers) (string, AnnotationScope, AnnotationModifier, bool) {
+	if modifiers == nil || len(modifiers) == 0 {
+		modifiers = AnnotationModifiers{
+			NoModifier: "",
+		}
 	}
-	if v, ok := annotations[key+"/pod"]; ok {
-		return v, PodScopedAnnotation, true
+
+	var (
+		annotations = p.Pod.GetAnnotations()
+		value       string
+		scope       AnnotationScope
+		modifier    AnnotationModifier
+	)
+
+	for _, mod := range slices.Sorted(maps.Keys(modifiers)) {
+		var (
+			prefix = modifiers[mod]
+			keys   []string
+		)
+
+		if prefix != "" {
+			keys = []string{
+				prefix + "-" + base,
+				prefix + "." + base,
+			}
+		} else {
+			keys = []string{base}
+		}
+
+		for _, key := range keys {
+			if v, ok := annotations[key+"/container."+container]; ok {
+				if value == "" || ContainerScopedAnnotation <= scope {
+					value, scope, modifier = v, ContainerScopedAnnotation, mod
+					continue
+				}
+			}
+		}
+		for _, key := range keys {
+			if v, ok := annotations[key+"/pod"]; ok {
+				if value == "" || PodScopedAnnotation <= scope {
+					value, scope, modifier = v, PodScopedAnnotation, mod
+					continue
+				}
+			}
+		}
+		for _, key := range keys {
+			if v, ok := annotations[key]; ok {
+				if value == "" || UnscopedAnnotation <= scope {
+					value, scope, modifier = v, UnscopedAnnotation, mod
+				}
+			}
+		}
 	}
-	v, ok := annotations[key]
-	return v, UnscopedAnnotation, ok
+
+	if value != "" {
+		return value, scope, modifier, true
+	}
+
+	return "", UnscopedAnnotation, NoModifier, false
 }
 
 func (p *pod) GetQOSClass() v1.PodQOSClass {

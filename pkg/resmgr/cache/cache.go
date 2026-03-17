@@ -82,8 +82,14 @@ const (
 	AnnotatedResourcesKey = kubernetes.AnnotatedResourcesKey
 )
 
-// AnnotationScope denotes the scope of a queried effective annotation.
-type AnnotationScope int
+type (
+	// AnnotationScope denotes the scope of a queried effective annotation.
+	AnnotationScope int
+	// AnnotationModifier denotes the modifier of a queried effective annotation.
+	AnnotationModifier int
+	// AnnotationModifiers is a map of annotation modifiers, keyed by modifier name.
+	AnnotationModifiers map[AnnotationModifier]string
+)
 
 const (
 	// ContainerScopedAnnotation indicates a container scoped
@@ -95,6 +101,30 @@ const (
 	// UnscopedAnnotation indicates a unscoped annotation
 	// using the plain $key key syntax.
 	UnscopedAnnotation
+
+	// NoModifier indicates no annotation modifier.
+	NoModifier AnnotationModifier = iota
+	// PreferModifier indicates that an annotation denotes a preference.
+	PreferModifier
+	// RequireModifier indicates that an annotation denotes a strict requirement.
+	RequireModifier
+
+	// PrefixPrefer is the default prefix to denote an annotated preference.
+	PrefixPrefer = "prefer"
+	// PrefixRequire is the default prefix to denote an annotated requirement.
+	PrefixRequire = "require"
+)
+
+var (
+	PreferredOrRequiredModifier = AnnotationModifiers{
+		PreferModifier:  PrefixPrefer,
+		RequireModifier: PrefixRequire,
+	}
+	PreferredOrRequiredOrNoModifier = AnnotationModifiers{
+		NoModifier:      "",
+		PreferModifier:  PrefixPrefer,
+		RequireModifier: PrefixRequire,
+	}
 )
 
 // PodState is the pod state in the runtime.
@@ -143,7 +173,7 @@ type Pod interface {
 
 	// QueryEffectiveAnnotation is like GetEffectiveAnnotation but also returns
 	// the scope of the found annotation.
-	QueryEffectiveAnnotation(key, container string) (string, AnnotationScope, bool)
+	QueryEffectiveAnnotation(key, container string, mod AnnotationModifiers) (string, AnnotationScope, AnnotationModifier, bool)
 
 	// GetPodResources returns the pod resources for this pod, waiting for any
 	// pending fetch to complete or a timeout.
@@ -250,7 +280,7 @@ type Container interface {
 
 	// QueryEffectiveAnnotation is like GetEffectiveAnnotation but also returns
 	// the scope of the found annotation.
-	QueryEffectiveAnnotation(key string) (string, AnnotationScope, bool)
+	QueryEffectiveAnnotation(key string, mod AnnotationModifiers) (string, AnnotationScope, AnnotationModifier, bool)
 
 	// Containers can be subject for expression evaluation.
 	resmgr.Evaluable
