@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -50,7 +49,7 @@ func NewLogger(source string) Logger {
 		source: source,
 		Logger: slog.New(
 			slog.NewMultiHandler(
-				NewHandler(source),
+				NewSlogHandler(source),
 				NewOtelHandler(source),
 			),
 		),
@@ -180,209 +179,87 @@ func (l *slogger) SlogHandler() slog.Handler {
 	return l.Handler()
 }
 
-type Handler struct {
-	sync.Mutex
-	source string
-	attrs  []Attr
-	group  *group
+type SlogHandler struct {
+	handler slog.Handler
+	source  string
 }
 
-var _ slog.Handler = &Handler{}
-
-type group struct {
-	name  string
-	attrs []Attr
-	next  *group
-}
-
-func NewHandler(source string) *Handler {
-	return &Handler{
+func NewSlogHandler(source string) *SlogHandler {
+	h := &SlogHandler{
 		source: source,
 	}
+	h.handler = slog.NewTextHandler(h, &slog.HandlerOptions{ReplaceAttr: h.ReplaceAttr})
+	return h
 }
 
-func (h *Handler) Enabled(_ context.Context, lvl Level) bool {
-	if lvl >= LevelInfo {
-		return true
-	}
-
-	return cfg.Debugging(h.source)
-}
-
-func (h *Handler) WithAttrs(attrs []Attr) slog.Handler {
-	n := &Handler{
-		source: h.source,
-	}
-
-	if h.group == nil {
-		n.attrs = slices.Clone(h.attrs)
-		n.attrs = append(n.attrs, attrs...)
-	} else {
-		n.group = h.group.Clone()
-		n.group.attrs = slices.Clone(attrs)
-	}
-
-	return n
-}
-
-func (h *Handler) WithGroup(name string) slog.Handler {
-	return &Handler{
-		source: h.source,
-		attrs:  h.attrs,
-		group: &group{
-			name: name,
-			next: h.group,
-		},
+func (o *SlogHandler) WithGroup(name string) slog.Handler {
+	return &SlogHandler{
+		source:  o.source,
+		handler: o.handler.WithGroup(name),
 	}
 }
 
-func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
+func (o *SlogHandler) WithAttrs(attrs []Attr) slog.Handler {
+	attrs = slices.Clone(attrs)
+	return &SlogHandler{
+		source:  o.source,
+		handler: o.handler.WithAttrs(attrs),
+	}
+}
+
+func (o *SlogHandler) Enabled(ctx context.Context, level slog.Level) (enabled bool) {
+	if level > LevelDebug {
+		return o.handler.Enabled(ctx, level)
+	}
+	return cfg.Debugging(o.source)
+}
+
+func (o *SlogHandler) Handle(ctx context.Context, r slog.Record) error {
+	if cfg.SkipHeaders() && cfg.LogSource() {
+		r.Time = time.Time{}
+	}
+
+	return o.handler.Handle(ctx, r)
+}
+
+func (o *SlogHandler) ReplaceAttr(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 && cfg.SkipHeaders() && cfg.LogSource() && a.Key == slog.LevelKey {
+		return slog.Attr{Key: a.Key, Value: slog.StringValue(a.Value.String()[:1])}
+	}
+	return a
+}
+
+func (o *SlogHandler) formatLevelAndSource(entry []byte) (level, source, rest []byte) {
+	if !(cfg.SkipHeaders() && cfg.LogSource()) {
+		return nil, nil, entry
+	}
+
 	var (
-		msg   = bytes.NewBuffer(make([]byte, 0, 256))
-		attrs = bytes.NewBuffer(make([]byte, 0, 256))
-		pre   []byte
-		post  []byte
+		key       = []byte("level=")
+		pre, post int
 	)
 
-	if cfg.SkipHeaders() && cfg.LogSource() {
-		h.LegacyFormatMessage(msg, &r)
-		pre = []byte("{ ")
-		post = []byte("}\n")
-	} else {
-		h.FormatMessage(msg, &r)
-		pre = []byte(" ")
-		post = []byte("\n")
+	if !bytes.HasPrefix(entry, key) {
+		return nil, nil, entry
 	}
 
-	h.FormatAttrs(attrs, &r)
-	if attrs.Len() == 0 {
-		pre = []byte("")
-		post = []byte("\n")
-	}
+	level = entry[len(key) : len(key)+1]
+	rest = entry[len(key)+1+1:]
 
-	var err error
-	emit := func(buf []byte) {
-		if _, e := out.Write(buf); e != nil {
-			fmt.Fprintf(os.Stderr, "failed to emit log message: %v\n", err)
-			if err == nil {
-				err = e
-			}
-		}
-	}
+	pre, post = cfg.PadSource(o.source)
+	src := bytes.NewBuffer(make([]byte, 0, pre+post+len(o.source)))
+	fmt.Fprintf(src, "[%*.*s%s%*.*s] ", pre, pre, "", o.source, post, post, "")
 
-	outLock.Lock()
-	defer outLock.Unlock()
-
-	emit(msg.Bytes())
-	emit(pre)
-	emit(attrs.Bytes())
-	emit(post)
-
-	return err
+	return level, src.Bytes(), rest
 }
 
-func (h *Handler) LegacyFormatMessage(buf *bytes.Buffer, r *slog.Record) {
-	pre, post := cfg.PadSource(h.source)
-	fmt.Fprintf(buf, "%s:", r.Level.String()[:1])
-	fmt.Fprintf(buf, " [%*.*s%s%*.*s]", pre, pre, "", h.source, post, post, "")
-	fmt.Fprintf(buf, " %s", r.Message)
-}
-
-func (h *Handler) FormatMessage(buf *bytes.Buffer, r *slog.Record) {
-	if cfg.SkipHeaders() {
-		fmt.Fprintf(buf, "%s:", r.Level.String()[:1])
-	} else {
-		h.WriteAttr(buf, "", slog.String(slog.LevelKey, r.Level.String()))
-		if !r.Time.IsZero() {
-			h.WriteAttr(buf, "", slog.Time(slog.TimeKey, r.Time))
-		}
+func (o *SlogHandler) Write(p []byte) (n int, err error) {
+	level, source, msg := o.formatLevelAndSource(p)
+	if level != nil {
+		fmt.Fprintf(out, "%s: ", string(level))
 	}
-	h.WriteAttr(buf, "", slog.String(slog.MessageKey, r.Message))
-}
-
-func (h *Handler) FormatAttrs(buf *bytes.Buffer, r *slog.Record) {
-	prefix := ""
-	groups := []*group{}
-
-	for g := h.group; g != nil; g = g.next {
-		groups = append(groups, g)
+	if source != nil {
+		fmt.Fprintf(out, string(source))
 	}
-
-	for i := len(groups) - 1; i >= 0; i-- {
-		g := groups[i]
-		if g.name != "" {
-			if prefix == "" {
-				prefix = g.name + "."
-			} else {
-				prefix += g.name + "."
-			}
-		}
-		if len(g.attrs) > 0 {
-			for _, ga := range g.attrs {
-				h.WriteAttr(buf, prefix, ga)
-			}
-		}
-	}
-
-	if r.NumAttrs() > 0 {
-		r.Attrs(func(a slog.Attr) bool {
-			h.WriteAttr(buf, "", a)
-			return true
-		})
-	}
-}
-
-func (h *Handler) WriteAttr(buf *bytes.Buffer, prefix string, a Attr) {
-	a.Value = a.Value.Resolve()
-	if a.Equal(slog.Attr{}) {
-		return
-	}
-
-	sep := " "
-	if buf.Len() == 0 {
-		sep = ""
-	}
-
-	switch a.Value.Kind() {
-	case slog.KindString:
-		buf.WriteString(sep)
-		if a.Key == slog.LevelKey {
-			fmt.Fprintf(buf, "%s%s=%s", prefix, a.Key, a.Value.String())
-		} else {
-			fmt.Fprintf(buf, "%s%s=%q", prefix, a.Key, a.Value.String())
-		}
-	case slog.KindTime:
-		constLenTime := a.Value.Time().Truncate(time.Millisecond).Add(time.Millisecond / 10)
-		buf.WriteString(sep)
-		fmt.Fprintf(buf, "%s%s=%s", prefix, a.Key, constLenTime.Format(time.RFC3339Nano))
-	case slog.KindGroup:
-		attrs := a.Value.Group()
-		if len(attrs) == 0 {
-			return
-		}
-		if a.Key != "" {
-			if prefix == "" {
-				prefix = a.Key + "."
-			} else {
-				prefix += a.Key + "."
-			}
-		}
-		for _, ga := range attrs {
-			h.WriteAttr(buf, prefix, slog.Any(ga.Key, ga.Value))
-		}
-	default:
-		buf.WriteString(sep)
-		fmt.Fprintf(buf, "%s%s=%s", prefix, a.Key, a.Value)
-	}
-}
-
-func (g *group) Clone() *group {
-	if g == nil {
-		return nil
-	}
-	return &group{
-		name:  g.name,
-		next:  g.next,
-		attrs: slices.Clone(g.attrs),
-	}
+	return out.Write(msg)
 }
