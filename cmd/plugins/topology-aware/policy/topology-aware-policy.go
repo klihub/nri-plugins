@@ -111,6 +111,7 @@ func (p *policy) Setup(opts *policyapi.BackendOptions) error {
 	defaultPrio = cfg.DefaultCPUPriority.Value()
 
 	defer p.commitCpuClasses("setup")
+	defer p.applyIrqAffinity("setup")
 
 	if err := p.initialize(); err != nil {
 		return policyError("failed to initialize %s policy: %w", PolicyName, err)
@@ -233,6 +234,7 @@ func (p *policy) AllocateResources(container cache.Container) error {
 	log.Debugf("allocating resources for %s (%s)...", container.PrettyName(), container.GetID())
 
 	defer p.commitCpuClasses(container.PrettyName())
+	defer p.applyIrqAffinity(container.PrettyName())
 
 	err := p.allocateResources(container, "")
 	if err != nil {
@@ -264,6 +266,7 @@ func (p *policy) ReleaseResources(container cache.Container) error {
 	log.Debugf("releasing resources for %s (%s)...", container.PrettyName(), container.GetID())
 
 	defer p.commitCpuClasses(container.PrettyName())
+	defer p.applyIrqAffinity(container.PrettyName())
 
 	if grant, found := p.releasePool(container); found {
 		p.updateSharedAllocations(&grant)
@@ -282,6 +285,7 @@ func (p *policy) UpdateResources(container cache.Container) error {
 	log.Debugf("updating (reallocating) container %s...", container.PrettyName())
 
 	defer p.commitCpuClasses(container.PrettyName())
+	defer p.applyIrqAffinity(container.PrettyName())
 
 	grant, found := p.releasePool(container)
 	if !found {
@@ -524,6 +528,7 @@ func (p *policy) Reconfigure(newCfg interface{}) error {
 	defaultPrio = cfg.DefaultCPUPriority.Value()
 
 	defer p.commitCpuClasses("reconfigure")
+	defer p.applyIrqAffinity("reconfigure")
 
 	if err := p.initialize(); err != nil {
 		*p = savedPolicy
