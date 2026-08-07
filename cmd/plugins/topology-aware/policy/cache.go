@@ -189,6 +189,11 @@ func (ccg *cachedGrant) ToGrant(policy *policy) (Grant, error) {
 		ccg.CPUClass = class
 	}
 
+	irqs, err := irqAffinityPreference(container)
+	if err != nil {
+		log.Errorf("%s: ignoring IRQ affinities: %v", container.PrettyName(), err)
+	}
+
 	g := newGrant(
 		node,
 		container,
@@ -197,6 +202,7 @@ func (ccg *cachedGrant) ToGrant(policy *policy) (Grant, error) {
 		cpuset.MustParse(ccg.Exclusive),
 		ccg.Part,
 		ccg.MemType,
+		irqs,
 		ccg.ColdStart,
 	)
 

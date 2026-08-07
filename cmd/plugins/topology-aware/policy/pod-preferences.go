@@ -47,6 +47,8 @@ const (
 	keySchedulingClass = "scheduling-class." + kubernetes.ResmgrKeyNamespace
 	// annotation key for CPU class
 	keyCpuClass = "cpu-class." + kubernetes.ResmgrKeyNamespace
+	// annotation key for IRQ affinity
+	keyIrqAffinity = "irq-affinity." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for isolated CPU preference
 	preferIsolatedCPUsKey = "prefer-isolated-cpus" + "." + kubernetes.ResmgrKeyNamespace
 	// effective annotation key for strict isolated CPU preference
@@ -294,6 +296,26 @@ func cpuClassPreference(ctr cache.Container) (string, error) {
 	}
 
 	return "", nil
+}
+
+// irqAffinityPreference returns the annotated IRQ affinity for the container.
+func irqAffinityPreference(ctr cache.Container) (*IrqAffinity, error) {
+	value, ok := ctr.GetEffectiveAnnotation(keyIrqAffinity)
+	if !ok {
+		return nil, nil
+	}
+
+	if ctr.GetQOSClass() != corev1.PodQOSGuaranteed {
+		log.Warnf("ignoring IRQ affinity for non-guaranteed container %s", ctr.PrettyName())
+		return nil, nil
+	}
+
+	a := &IrqAffinity{}
+	if err := yaml.Unmarshal([]byte(value), a); err != nil {
+		return nil, fmt.Errorf("invalid IRQ affinity %q: %v", value, err)
+	}
+
+	return a, nil
 }
 
 // coldStartPreference figures out 'cold start' preferences for the container, IOW
