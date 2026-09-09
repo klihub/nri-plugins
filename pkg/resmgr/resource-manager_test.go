@@ -18,7 +18,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
+	"github.com/containers/nri-plugins/pkg/lib/hardware"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	"github.com/containers/nri-plugins/pkg/resmgr/policy"
 )
@@ -31,6 +33,31 @@ type testBackend struct {
 }
 
 func (b testBackend) Name() string { return b.name }
+
+// oneCpuMachine is the smallest machine discovery accepts: one
+// single-threaded CPU in one package, in one node with memory.
+func oneCpuMachine(t *testing.T) *hardware.Machine {
+	t.Helper()
+
+	file := func(s string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(s)} }
+	m, err := hardware.Discover(hardware.WithFS(fstest.MapFS{
+		"proc/meminfo":                                             file("MemTotal: 1048576 kB\n"),
+		"sys/devices/system/cpu/online":                            file("0\n"),
+		"sys/devices/system/cpu/present":                           file("0\n"),
+		"sys/devices/system/cpu/possible":                          file("0\n"),
+		"sys/devices/system/cpu/cpu0/topology/physical_package_id": file("0\n"),
+		"sys/devices/system/cpu/cpu0/topology/core_id":             file("0\n"),
+		"sys/devices/system/cpu/cpu0/topology/core_cpus_list":      file("0\n"),
+		"sys/devices/system/node/has_normal_memory":                file("0\n"),
+		"sys/devices/system/node/node0/cpulist":                    file("0\n"),
+		"sys/devices/system/node/node0/meminfo":                    file("Node 0 MemTotal: 1048576 kB\n"),
+		"sys/devices/system/node/node0/distance":                   file("10\n"),
+	}))
+	if err != nil {
+		t.Fatalf("failed to discover the test machine: %v", err)
+	}
+	return m
+}
 
 // TestSetupPolicyResetsOnSwitch verifies that setting up a policy after a
 // restart clears the data of another policy, but keeps the data of the same
@@ -68,7 +95,7 @@ func TestSetupPolicyResetsOnSwitch(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to restore cache: %v", err)
 			}
-			m := &resmgr{cache: cch}
+			m := &resmgr{cache: cch, machine: oneCpuMachine(t)}
 			if err := m.setupPolicy(testBackend{name: tc.policy}); err != nil {
 				t.Fatalf("failed to set up policy: %v", err)
 			}

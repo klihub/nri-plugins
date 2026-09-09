@@ -24,6 +24,7 @@ import (
 	"github.com/containers/nri-plugins/pkg/healthz"
 	"github.com/containers/nri-plugins/pkg/instrumentation"
 	"github.com/containers/nri-plugins/pkg/instrumentation/coverage"
+	"github.com/containers/nri-plugins/pkg/lib/hardware"
 	sysfs "github.com/containers/nri-plugins/pkg/lib/hardware/system"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/pidfile"
@@ -58,15 +59,16 @@ type resmgr struct {
 	sync.RWMutex
 	agent   *agent.Agent
 	cfg     cfgapi.ResmgrConfig
-	cache   cache.Cache     // cached state
-	policy  policy.Policy   // resource manager policy
-	control control.Control // policy controllers/enforcement
-	events  chan any        // channel for delivering events
-	stop    chan any        // channel for signalling shutdown to goroutines
-	nri     *nriPlugin      // NRI plugins, if we're running as such
-	rdt     *rdtControl     // control for RDT allocation and monitoring
-	blkio   *blkioControl   // control for block I/O prioritization and throttling
-	dra     *dra.Plugin     // DRA kubelet plugin, if DRA is enabled
+	cache   cache.Cache       // cached state
+	machine *hardware.Machine // CPU and memory topology, discovered once
+	policy  policy.Policy     // resource manager policy
+	control control.Control   // policy controllers/enforcement
+	events  chan any          // channel for delivering events
+	stop    chan any          // channel for signalling shutdown to goroutines
+	nri     *nriPlugin        // NRI plugins, if we're running as such
+	rdt     *rdtControl       // control for RDT allocation and monitoring
+	blkio   *blkioControl     // control for block I/O prioritization and throttling
+	dra     *dra.Plugin       // DRA kubelet plugin, if DRA is enabled
 	running bool
 }
 
@@ -88,8 +90,20 @@ func NewResourceManager(backend policy.Backend, agt *agent.Agent) (ResourceManag
 		irq.SetProcRoot(opt.HostRoot)
 	}
 
+	// Discover the topology once and hand it down, so everything below
+	// sees one view of the hardware. Users of the pkg/sysfs interface
+	// wrap it with sysfs.FromMachine.
+	machine, err := hardware.Discover(
+		hardware.WithRoot(opt.HostRoot),
+		hardware.WithEnvOverrides(),
+	)
+	if err != nil {
+		return nil, resmgrError("failed to discover hardware topology: %v", err)
+	}
+
 	m := &resmgr{
-		agent: agt,
+		agent:   agt,
+		machine: machine,
 	}
 
 	if err := m.setupCache(); err != nil {
@@ -287,7 +301,10 @@ func (m *resmgr) setupPolicy(backend policy.Backend) error {
 		log.Warnf("failed to set active policy: %v", err)
 	}
 
-	p, err := policy.NewPolicy(backend, m.cache, &policy.Options{SendEvent: m.SendEvent})
+	p, err := policy.NewPolicy(backend, m.cache, &policy.Options{
+		Machine:   m.machine,
+		SendEvent: m.SendEvent,
+	})
 	if err != nil {
 		return resmgrError("failed to create policy %s: %v", backend.Name(), err)
 	}
