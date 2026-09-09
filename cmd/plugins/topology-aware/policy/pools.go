@@ -23,9 +23,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/topologyaware"
+	"github.com/containers/nri-plugins/pkg/lib/hardware/system"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
-	system "github.com/containers/nri-plugins/pkg/sysfs"
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
