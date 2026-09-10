@@ -17,30 +17,24 @@ package cpuallocator
 import (
 	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
-	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
-// toCpuSet converts a libcpu mask from the hardware package to a k8s cpuset.
-func toCpuSet(cpus libcpu.CPUSet) cpuset.CPUSet {
-	return cpuset.New(cpus.List()...)
-}
-
 // cacheCPUsAtLevel returns the CPUs sharing any of a CPU's caches at one level,
 // or its thread siblings if it has no caches. A level with separate data and
-// instruction caches contributes both.
-func cacheCPUsAtLevel(m *hardware.Machine, id idset.ID, level int) cpuset.CPUSet {
+// instruction caches contributes both. The result is read-only.
+func cacheCPUsAtLevel(m *hardware.Machine, id idset.ID, level int) *libcpu.CpuMask {
 	c := m.CPU(id)
 
 	caches := c.Caches()
 	if len(caches) == 0 {
-		return toCpuSet(c.Threads())
+		return c.Threads()
 	}
 
-	cpus := cpuset.New()
+	cpus := libcpu.NewCpuMask()
 	for _, cache := range caches {
 		if cache.Level() == level {
-			cpus = cpus.Union(toCpuSet(cache.CPUs()))
+			cpus = cpus.Union(cache.CPUs())
 		} else if cache.Level() > level {
 			break
 		}
