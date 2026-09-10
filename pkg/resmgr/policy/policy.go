@@ -26,7 +26,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
-	"github.com/containers/nri-plugins/pkg/lib/hardware/system"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	// nrt "github.com/k8stopologyawareschedwg/noderesourcetopology-api/pkg/apis/topology/v1alpha1"
 )
@@ -65,8 +64,6 @@ type Options struct {
 type BackendOptions struct {
 	// Machine provides system/HW/topology information.
 	Machine *hardware.Machine
-	// System is Machine behind the pkg/sysfs interface.
-	System system.System
 	// System state/cache
 	Cache cache.Cache
 	// SendEvent is the function for delivering events up to the resource manager.
@@ -235,7 +232,6 @@ type policy struct {
 	cache    cache.Cache       // system state cache
 	active   Backend           // our active backend
 	machine  *hardware.Machine // CPU and memory topology
-	system   system.System     // the same, behind the pkg/sysfs interface
 	scollect *SystemCollector  // system metrics collector
 }
 
@@ -255,7 +251,6 @@ func NewPolicy(backend Backend, cache cache.Cache, o *Options) (Policy, error) {
 		options: *o,
 		active:  backend,
 		machine: o.Machine,
-		system:  system.FromMachine(o.Machine),
 	}
 
 	return p, nil
@@ -275,7 +270,6 @@ func (p *policy) Start(cfg any) error {
 	if err := p.active.Setup(&BackendOptions{
 		Cache:     p.cache,
 		Machine:   p.machine,
-		System:    p.system,
 		SendEvent: p.options.SendEvent,
 		Config:    cfg,
 	}); err != nil {
