@@ -23,13 +23,7 @@ import (
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
-// toCpuSet and toCpuMask convert between libcpu masks and k8s cpusets.
-// The CPU class controller, the IRQ affinity helpers, topology hints and
-// libmem take cpusets.
-func toCpuSet(cpus libcpu.CPUSet) cpuset.CPUSet {
-	return cpuset.New(cpus.List()...)
-}
-
+// toCpuMask converts a cpuset parsed from the configuration to a libcpu mask.
 func toCpuMask(cpus cpuset.CPUSet) *libcpu.CpuMask {
 	return libcpu.NewCpuMask(cpus.List()...)
 }

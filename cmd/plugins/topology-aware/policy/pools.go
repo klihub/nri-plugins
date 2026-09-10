@@ -615,7 +615,7 @@ func (p *policy) applyGrant(grant Grant) {
 		container.SetCPUShares(int64(cache.MilliCPUToShares(int64(milliCPU))))
 
 		if exclusive.Size() > 0 && grant.CPUClass() != "" {
-			if err := p.cpuClasses.UseClass(grant.CPUClass(), toCpuSet(exclusive)); err != nil {
+			if err := p.cpuClasses.UseClass(grant.CPUClass(), exclusive); err != nil {
 				log.Errorf("%s: failed to apply CPU class to cpuset %s: %v",
 					container.PrettyName(), exclusive, err)
 			}
@@ -1123,8 +1123,8 @@ func (p *policy) compareScores(request Request, pools []Node, scores map[int]Sco
 
 		for _, h := range score1.CpuClassHints().Prefer {
 			for _, hinted := range h.Cpus {
-				if offer1.Intersection(toCpuMask(hinted)).Equals(offer1) {
-					hcpus1 = toCpuMask(hinted)
+				if offer1.Intersection(hinted).Equals(offer1) {
+					hcpus1 = hinted
 					break
 				}
 			}
@@ -1134,8 +1134,8 @@ func (p *policy) compareScores(request Request, pools []Node, scores map[int]Sco
 		}
 		for _, h := range score2.CpuClassHints().Prefer {
 			for _, hinted := range h.Cpus {
-				if offer2.Intersection(toCpuMask(hinted)).Equals(offer2) {
-					hcpus2 = toCpuMask(hinted)
+				if offer2.Intersection(hinted).Equals(offer2) {
+					hcpus2 = hinted
 					break
 				}
 			}
