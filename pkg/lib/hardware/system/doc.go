@@ -21,11 +21,11 @@
 //
 // # Why it exists
 //
-// It is a migration step, and a proof. pkg/sysfs stays in the tree beside
-// it, so equivalence_test.go can run every method of both against the same
-// recorded sysfs trees and compare the answers. This package and the
-// hardware package change no behaviour and no caller. Moving consumers off
-// pkg/sysfs, and deleting it, comes after.
+// It was a migration step, and it is a proof. Nothing in this repository
+// uses it any more. pkg/sysfs stays in the tree beside it, so
+// equivalence_test.go can run every method of both against the same
+// recorded sysfs trees and compare the answers. This package goes when
+// pkg/sysfs goes.
 //
 // Do not build anything new on this package. New code should use
 // [github.com/containers/nri-plugins/pkg/lib/hardware] directly.

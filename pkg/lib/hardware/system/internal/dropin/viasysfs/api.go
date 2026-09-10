@@ -4,7 +4,7 @@
 package viasysfs
 
 import (
-	sysfs "github.com/containers/nri-plugins/pkg/sysfs"
+	sysfs "github.com/containers/nri-plugins/pkg/sysfs" //nolint:staticcheck // deprecated on purpose: this is what it is compared against
 
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 	"github.com/intel/goresctrl/pkg/sst"
