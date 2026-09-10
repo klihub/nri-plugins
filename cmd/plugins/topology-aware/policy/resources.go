@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/containers/nri-plugins/pkg/agent/podresapi"
-	sysfs "github.com/containers/nri-plugins/pkg/lib/hardware/system"
+	"github.com/containers/nri-plugins/pkg/lib/hardware"
 	"github.com/containers/nri-plugins/pkg/topology"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 
@@ -1084,7 +1084,7 @@ func (cs *supply) GetScore(req Request) Score {
 		// calculate fractional capacity
 		score.shared -= part
 
-		lpCPUs := cs.GetNode().System().CoreKindCPUs(sysfs.EfficientCore)
+		lpCPUs := toCpuSet(cs.GetNode().Machine().CoreKindCPUs(hardware.EfficientCore))
 		if lpCPUs.Size() == 0 {
 			lpCPUs = p.cpuAllocator.GetCPUPriorities()[lowPrio]
 		}
@@ -1092,7 +1092,7 @@ func (cs *supply) GetScore(req Request) Score {
 		lpCnt := lpCPUs.Size()
 		score.prio[lowPrio] = lpCnt*1000 - (1000*full + part)
 
-		hpCPUs := cs.GetNode().System().CoreKindCPUs(sysfs.PerformanceCore)
+		hpCPUs := toCpuSet(cs.GetNode().Machine().CoreKindCPUs(hardware.PerformanceCore))
 		if hpCPUs.Size() == 0 {
 			hpCPUs = p.cpuAllocator.GetCPUPriorities()[highPrio]
 		}
@@ -1132,7 +1132,7 @@ func (cs *supply) GetScore(req Request) Score {
 
 	// calculate real hint scores
 	hints := cr.container.GetTopologyHints()
-	hints.ResolvePartialHints(cs.GetNode().System().NodeHintToCPUs)
+	hints.ResolvePartialHints(nodeHintToCPUs(cs.GetNode().Machine()))
 	score.hints = make(map[string]float64, len(hints))
 
 	for provider, hint := range cr.container.GetTopologyHints() {
