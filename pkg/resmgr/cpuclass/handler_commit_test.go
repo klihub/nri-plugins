@@ -15,12 +15,13 @@
 package cpuclass
 
 import (
+	"fmt"
+	"sort"
 	"sync"
 	"testing"
+	"testing/fstest"
 
-	idset "github.com/intel/goresctrl/pkg/utils"
-
-	sysfs "github.com/containers/nri-plugins/pkg/lib/hardware/system"
+	"github.com/containers/nri-plugins/pkg/lib/hardware"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/cpufreq"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/cpuidle"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/types"
@@ -28,105 +29,51 @@ import (
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
-// dieFakePackage extends the package fake with die support so the
-// uncore writer can enumerate (pkg, die) tuples.
-type dieFakePackage struct {
-	sysfs.CPUPackage
-	id      idset.ID
-	cpus    cpuset.CPUSet
-	dies    []idset.ID
-	dieCpus map[idset.ID]cpuset.CPUSet
-}
-
-func (p *dieFakePackage) ID() idset.ID                       { return p.id }
-func (p *dieFakePackage) CPUSet() cpuset.CPUSet              { return p.cpus }
-func (p *dieFakePackage) DieIDs() []idset.ID                 { return p.dies }
-func (p *dieFakePackage) DieCPUSet(d idset.ID) cpuset.CPUSet { return p.dieCpus[d] }
-
-// dieFakeCPU augments the cpu fake with package id.
-type dieFakeCPU struct {
-	sysfs.CPU
-	id  idset.ID
-	pkg idset.ID
-}
-
-func (c *dieFakeCPU) ID() idset.ID        { return c.id }
-func (c *dieFakeCPU) PackageID() idset.ID { return c.pkg }
-
-// dieFakeSys is the minimum sysfs.System surface used by the
-// uncore writer (Package, CPU, PackageIDs, DieIDs, DieCPUSet).
-// Unimplemented methods panic via the embedded nil interface.
-type dieFakeSys struct {
-	sysfs.System
-	packages map[idset.ID]*dieFakePackage
-	cpuPkg   map[int]idset.ID
-}
-
-func (s *dieFakeSys) PackageIDs() []idset.ID {
-	ids := make([]idset.ID, 0, len(s.packages))
-	for id := range s.packages {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-func (s *dieFakeSys) Package(id idset.ID) sysfs.CPUPackage {
-	if p, ok := s.packages[id]; ok {
-		return p
-	}
-	return nil
-}
-
-func (s *dieFakeSys) CPU(id idset.ID) sysfs.CPU {
-	pkg, ok := s.cpuPkg[int(id)]
-	if !ok {
-		return nil
-	}
-	return &dieFakeCPU{id: id, pkg: pkg}
-}
-
-// dieFakeCpu specifies the (pkg, die) location of a single CPU when
-// building a dieFakeSys.
+// dieFakeCpu specifies the (pkg, die) location of a single CPU when building a
+// machine for these tests.
 type dieFakeCpu struct {
 	pkg int
 	die int
 }
 
-// newDieFakeSys builds a dieFakeSys from a map cpu -> (pkg, die).
-func newDieFakeSys(cpus map[int]dieFakeCpu) *dieFakeSys {
-	pkgs := map[idset.ID]*dieFakePackage{}
-	cpuPkg := map[int]idset.ID{}
-	type pkgDieKey struct{ pkg, die int }
-	dieCpus := map[pkgDieKey]cpuset.CPUSet{}
-	pkgCpus := map[int]cpuset.CPUSet{}
-	pkgDies := map[int]map[int]bool{}
+// newDieMachine returns a machine with the given cpu -> (pkg, die) layout,
+// written out as sysfs and read back through discovery. A negative die leaves
+// die_id unreported. One NUMA node holds everything.
+func newDieMachine(t *testing.T, cpus map[int]dieFakeCpu) *hardware.Machine {
+	t.Helper()
+
+	file := func(s string) *fstest.MapFile { return &fstest.MapFile{Data: []byte(s)} }
+	ids := make([]int, 0, len(cpus))
+	for cpu := range cpus {
+		ids = append(ids, cpu)
+	}
+	sort.Ints(ids)
+
+	all := cpuset.New(ids...).String()
+	fsys := fstest.MapFS{
+		"proc/meminfo":                           file("MemTotal: 1048576 kB\n"),
+		"sys/devices/system/cpu/online":          file(all + "\n"),
+		"sys/devices/system/cpu/present":         file(all + "\n"),
+		"sys/devices/system/cpu/possible":        file(all + "\n"),
+		"sys/devices/system/node/node0/cpulist":  file(all + "\n"),
+		"sys/devices/system/node/node0/distance": file("10\n"),
+		"sys/devices/system/node/node0/meminfo":  file("Node 0 MemTotal: 1048576 kB\n"),
+	}
 	for cpu, loc := range cpus {
-		cpuPkg[cpu] = idset.ID(loc.pkg)
-		pkgCpus[loc.pkg] = pkgCpus[loc.pkg].Union(cpuset.New(cpu))
-		k := pkgDieKey(loc)
-		dieCpus[k] = dieCpus[k].Union(cpuset.New(cpu))
-		if pkgDies[loc.pkg] == nil {
-			pkgDies[loc.pkg] = map[int]bool{}
+		dir := fmt.Sprintf("sys/devices/system/cpu/cpu%d/topology", cpu)
+		fsys[dir+"/physical_package_id"] = file(fmt.Sprintf("%d\n", loc.pkg))
+		if loc.die >= 0 {
+			fsys[dir+"/die_id"] = file(fmt.Sprintf("%d\n", loc.die))
 		}
-		pkgDies[loc.pkg][loc.die] = true
+		fsys[dir+"/core_id"] = file(fmt.Sprintf("%d\n", cpu))
+		fsys[dir+"/core_cpus_list"] = file(fmt.Sprintf("%d\n", cpu))
 	}
-	for pkg, dies := range pkgDies {
-		dList := make([]idset.ID, 0, len(dies))
-		for d := range dies {
-			dList = append(dList, idset.ID(d))
-		}
-		dc := map[idset.ID]cpuset.CPUSet{}
-		for d := range dies {
-			dc[idset.ID(d)] = dieCpus[pkgDieKey{pkg, d}]
-		}
-		pkgs[idset.ID(pkg)] = &dieFakePackage{
-			id:      idset.ID(pkg),
-			cpus:    pkgCpus[pkg],
-			dies:    dList,
-			dieCpus: dc,
-		}
+
+	m, err := hardware.Discover(hardware.WithFS(fsys))
+	if err != nil {
+		t.Fatalf("failed to discover the test machine: %v", err)
 	}
-	return &dieFakeSys{packages: pkgs, cpuPkg: cpuPkg}
+	return m
 }
 
 // recordingWriters captures the per-CPU and per-die writes issued by
@@ -201,10 +148,10 @@ func (r *recordingWriters) installOn(h *Handler) {
 	h.idleWriter = cpuidle.NewWriter(cpuidle.Hooks{})
 }
 
-// newBareHandler returns a Handler with empty state, no sysfs
-// topology (callers may set h.sys), and the recording writers
-// installed. The cpuidle writer is left in a state where Enforce
-// will return early because no class has DisabledCstates.
+// newBareHandler returns a Handler with empty state, no sysfs topology
+// (callers may set h.machine) and the recording writers installed. The
+// cpuidle writer is left alone: no class has DisabledCstates, so Enforce
+// returns early.
 func newBareHandler() (*Handler, *recordingWriters) {
 	h := &Handler{
 		defs:      map[string]types.ClassDef{},
@@ -279,12 +226,12 @@ func TestAssignToEmptyClassDoesNotWriteCpufreq(t *testing.T) {
 // TestUncoreSkipBothZero verifies that a die with effective min=0
 // and max=0 produces no uncore writes.
 func TestUncoreSkipBothZero(t *testing.T) {
-	sys := newDieFakeSys(map[int]dieFakeCpu{
+	m := newDieMachine(t, map[int]dieFakeCpu{
 		0: {pkg: 0, die: 0},
 		1: {pkg: 0, die: 0},
 	})
 	h, r := newBareHandler()
-	h.sys = sys
+	h.machine = m
 	h.SetClassDef("idle@d0", types.ClassDef{MinFreq: 800_000})
 	h.AssignCPUs("idle@d0", []int{0, 1})
 	if err := h.Commit(); err != nil {
@@ -298,12 +245,12 @@ func TestUncoreSkipBothZero(t *testing.T) {
 // TestUncoreMaxWinsAcrossClasses verifies the per-die max-wins
 // reduction when multiple classes are active on the same die.
 func TestUncoreMaxWinsAcrossClasses(t *testing.T) {
-	sys := newDieFakeSys(map[int]dieFakeCpu{
+	m := newDieMachine(t, map[int]dieFakeCpu{
 		0: {pkg: 0, die: 0},
 		1: {pkg: 0, die: 0},
 	})
 	h, r := newBareHandler()
-	h.sys = sys
+	h.machine = m
 	h.SetClassDef("lo@d0", types.ClassDef{UncoreMinFreq: 800_000, UncoreMaxFreq: 1_500_000})
 	h.SetClassDef("hi@d0", types.ClassDef{UncoreMinFreq: 1_200_000, UncoreMaxFreq: 2_400_000})
 	h.AssignCPUs("lo@d0", []int{0})
@@ -324,12 +271,12 @@ func TestUncoreMaxWinsAcrossClasses(t *testing.T) {
 // winner class from a die triggers a fresh write with the loser's
 // (lower) values.
 func TestUncoreRecomputesOnAssignmentChange(t *testing.T) {
-	sys := newDieFakeSys(map[int]dieFakeCpu{
+	m := newDieMachine(t, map[int]dieFakeCpu{
 		0: {pkg: 0, die: 0},
 		1: {pkg: 0, die: 0},
 	})
 	h, r := newBareHandler()
-	h.sys = sys
+	h.machine = m
 	h.SetClassDef("lo@d0", types.ClassDef{UncoreMaxFreq: 1_500_000})
 	h.SetClassDef("hi@d0", types.ClassDef{UncoreMaxFreq: 2_400_000})
 	h.AssignCPUs("lo@d0", []int{0})
@@ -343,5 +290,69 @@ func TestUncoreRecomputesOnAssignmentChange(t *testing.T) {
 	}
 	if got := r.maxU[uncorefreq.DieKey{Pkg: 0, Die: 0}]; got != 1_500_000 {
 		t.Errorf("uncore max after hi removed = %d, want 1_500_000", got)
+	}
+}
+
+// TestUncoreUnreportedDie pins that a package without die_id is written as
+// die 0, the kernel's single uncore domain of such a package.
+func TestUncoreUnreportedDie(t *testing.T) {
+	m := newDieMachine(t, map[int]dieFakeCpu{
+		0: {pkg: 0, die: -1},
+		1: {pkg: 0, die: -1},
+	})
+	h, r := newBareHandler()
+	h.machine = m
+	h.SetClassDef("hi@d0", types.ClassDef{UncoreMaxFreq: 2_400_000})
+	h.AssignCPUs("hi@d0", []int{0, 1})
+	if err := h.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if got := r.maxU[uncorefreq.DieKey{Pkg: 0, Die: 0}]; got != 2_400_000 {
+		t.Errorf("uncore max of die 0 = %d, want 2_400_000; writes: %v", got, r.maxU)
+	}
+}
+
+// TestDiesForCpus covers the (pkg, die) lookup across more than one of each.
+// It also checks that newDieMachine lays out the described topology.
+func TestDiesForCpus(t *testing.T) {
+	m := newDieMachine(t, map[int]dieFakeCpu{
+		0: {pkg: 0, die: 0},
+		1: {pkg: 0, die: 0},
+		2: {pkg: 0, die: 1},
+		3: {pkg: 1, die: 0},
+		4: {pkg: 1, die: 1},
+	})
+
+	for _, tc := range []struct {
+		name string
+		cpus []int
+		want []uncorefreq.DieKey
+	}{
+		{"one die", []int{0, 1}, []uncorefreq.DieKey{{Pkg: 0, Die: 0}}},
+		{"two dies of one package", []int{1, 2},
+			[]uncorefreq.DieKey{{Pkg: 0, Die: 0}, {Pkg: 0, Die: 1}}},
+		{"across packages", []int{0, 3},
+			[]uncorefreq.DieKey{{Pkg: 0, Die: 0}, {Pkg: 1, Die: 0}}},
+		{"every die", []int{0, 1, 2, 3, 4}, []uncorefreq.DieKey{
+			{Pkg: 0, Die: 0}, {Pkg: 0, Die: 1}, {Pkg: 1, Die: 0}, {Pkg: 1, Die: 1},
+		}},
+		{"a CPU the machine does not have", []int{1 << 20}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cpus := map[int]bool{}
+			for _, cpu := range tc.cpus {
+				cpus[cpu] = true
+			}
+
+			got := uncorefreq.DiesForCpus(m, cpus)
+			if len(got) != len(tc.want) {
+				t.Fatalf("DiesForCpus(%v) = %v, want %v", tc.cpus, got, tc.want)
+			}
+			for _, key := range tc.want {
+				if !got[key] {
+					t.Errorf("DiesForCpus(%v) = %v, missing %v", tc.cpus, got, key)
+				}
+			}
+		})
 	}
 }

@@ -23,84 +23,21 @@ import (
 	idset "github.com/intel/goresctrl/pkg/utils"
 
 	policyapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy"
-	sysfs "github.com/containers/nri-plugins/pkg/lib/hardware/system"
+	"github.com/containers/nri-plugins/pkg/lib/hardware"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/types"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
 var errFakeSstNoClos = errors.New("fakeSst: no CLOS for CPU")
 
-// --- minimal sysfs.System / CPUPackage / CPU fakes ------------------
+// --- minimal Sys fake ----------------------------------------------
 
-// fakePackage implements sysfs.CPUPackage via an embedded nil
-// interface. Methods not overridden here panic if called, which is
-// the desired guardrail in unit tests.
-type fakePackage struct {
-	sysfs.CPUPackage
-	id   idset.ID
-	cpus cpuset.CPUSet
-}
+// fakeSys reports no CPUs, so turbo info stays nil, as on a platform whose
+// CPUs expose no frequency data.
+type fakeSys struct{}
 
-func (p *fakePackage) ID() idset.ID          { return p.id }
-func (p *fakePackage) CPUSet() cpuset.CPUSet { return p.cpus }
-
-// fakeCPU implements sysfs.CPU likewise.
-type fakeCPU struct {
-	sysfs.CPU
-	id  idset.ID
-	pkg idset.ID
-}
-
-func (c *fakeCPU) ID() idset.ID        { return c.id }
-func (c *fakeCPU) PackageID() idset.ID { return c.pkg }
-
-// fakeSys is a minimal Sys implementation built from package
-// CPU maps.
-type fakeSys struct {
-	packageCpus map[idset.ID]cpuset.CPUSet // pkgID -> cpus
-	cpuPkg      map[int]idset.ID           // cpu -> pkgID
-}
-
-func (s *fakeSys) PackageIDs() []idset.ID {
-	ids := make([]idset.ID, 0, len(s.packageCpus))
-	for id := range s.packageCpus {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-func (s *fakeSys) Package(id idset.ID) sysfs.CPUPackage {
-	cpus, ok := s.packageCpus[id]
-	if !ok {
-		return nil
-	}
-	return &fakePackage{id: id, cpus: cpus}
-}
-
-func (s *fakeSys) CPU(id idset.ID) sysfs.CPU {
-	pkg, ok := s.cpuPkg[int(id)]
-	if !ok {
-		return nil
-	}
-	return &fakeCPU{id: id, pkg: pkg}
-}
-
-func (s *fakeSys) CPUIDs() []idset.ID { return nil }
-
-// newTwoPackageFakeSys returns a fakeSys with two packages of 4 CPUs
-// each: pkg0=0..3, pkg1=4..7.
-func newTwoPackageFakeSys() *fakeSys {
-	return &fakeSys{
-		packageCpus: map[idset.ID]cpuset.CPUSet{
-			0: cpuset.MustParse("0-3"),
-			1: cpuset.MustParse("4-7"),
-		},
-		cpuPkg: map[int]idset.ID{
-			0: 0, 1: 0, 2: 0, 3: 0,
-			4: 1, 5: 1, 6: 1, 7: 1,
-		},
-	}
-}
+func (*fakeSys) CPUIDs() []idset.ID         { return nil }
+func (*fakeSys) CPU(idset.ID) *hardware.CPU { return nil }
 
 // --- minimal sst fake ------------------------------------------------
 
@@ -274,7 +211,7 @@ func pctTestWirePunits(a *Allocator) {
 // TestPctHintsNoClassNoOp covers the "no plan and not managed-with-HP"
 // branch where hints() must return an empty types.AllocationHints.
 func TestPctHintsNoClassNoOp(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{supported: true}
 
 	// disabled allocator: hints must short-circuit to empty.
@@ -302,7 +239,7 @@ func TestPctHintsNoClassNoOp(t *testing.T) {
 // branch in assoc-only mode: hints prefer free CPUs already
 // associated to the class's CLOS, enabling bin packing.
 func TestPctHintsAssocOnlyPreferClosCpus(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		// cpus 1, 2 and 3 already on CLOS 1, others on default CLOS 0.
@@ -344,7 +281,7 @@ func TestPctHintsAssocOnlyPreferClosCpus(t *testing.T) {
 // branch: hints contain (a) free CPUs already on the HP CLOS for bin
 // packing and (b) the HP-reserve preference (largest-room package).
 func TestPctHintsHighPriorityReserveAndClosCpus(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		// cpus 0 and 1 already on CLOS 0 (HP), cpu 0 in use.
@@ -408,7 +345,7 @@ func TestPctHintsHighPriorityReserveAndClosCpus(t *testing.T) {
 // hosting HP-class CPUs, so non-HP classes do not steal HP turbo
 // budget. THIS BRANCH IS NOT COVERED IN test19 e2e.
 func TestPctHintsManagedNonHpAvoidsHpInUse(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		cpuClos:   map[int]int{},
@@ -463,7 +400,7 @@ func TestPctHintsManagedNonHpAvoidsHpInUse(t *testing.T) {
 // Allowed (via the handler-level intersectHints + pct-internal
 // allowed intersections).
 func TestPctHintsAllowedBoundsResults(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		cpuClos:   map[int]int{1: 0, 4: 0}, // HP cpus on both packages
@@ -510,24 +447,6 @@ func TestPctHintsAllowedBoundsResults(t *testing.T) {
 
 // --- Tier A/B/C reservation tests ----------------------------------
 
-// newTwoPunitFakeSys returns a fakeSys whose package layout matches
-// the standard two-punit-per-package fixture below: pkg0 = 0..7
-// (punit-0 = 0..3, punit-1 = 4..7), pkg1 = 8..15 (punit-2 = 8..11,
-// punit-3 = 12..15). The synthesis function does not know about
-// punits, only packages.
-func newTwoPunitFakeSys() *fakeSys {
-	return &fakeSys{
-		packageCpus: map[idset.ID]cpuset.CPUSet{
-			0: cpuset.MustParse("0-7"),
-			1: cpuset.MustParse("8-15"),
-		},
-		cpuPkg: map[int]idset.ID{
-			0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0,
-			8: 1, 9: 1, 10: 1, 11: 1, 12: 1, 13: 1, 14: 1, 15: 1,
-		},
-	}
-}
-
 // makeTwoPunitsPerPkg returns four punits laid out as in
 // newTwoPunitFakeSys, with the given MaxHpCpus per punit.
 func makeTwoPunitsPerPkg(hp0, hp1, hp2, hp3 int) []pctPunit {
@@ -543,7 +462,7 @@ func makeTwoPunitsPerPkg(hp0, hp1, hp2, hp3 int) []pctPunit {
 // HP work, punit-1 in the same package has full HP room. A request
 // for 1 HP CPU must steer to punit-1 (Tier A), not to pkg1.
 func TestPctHints_HpRoomTierAPunitWins(t *testing.T) {
-	sys := newTwoPunitFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		punits:    makeTwoPunitsPerPkg(2, 2, 2, 2),
@@ -593,7 +512,7 @@ func TestPctHints_HpRoomTierAPunitWins(t *testing.T) {
 // enough for the request. Pkg1 has only 1 HP slot in total. The
 // Tier-B aggregate must steer to pkg0 (free CPUs of both punits).
 func TestPctHints_HpRoomTierBSamePackage(t *testing.T) {
-	sys := newTwoPunitFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		punits:    makeTwoPunitsPerPkg(2, 2, 1, 0),
@@ -641,7 +560,7 @@ func TestPctHints_HpRoomTierBSamePackage(t *testing.T) {
 // allocator must return no HP-reserve hint so the caller falls back
 // to topology-only placement on the same socket.
 func TestPctHints_HpRoomTierCNoCrossPackage(t *testing.T) {
-	sys := newTwoPunitFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		// pkg0 has 2 HP CPUs total, pkg1 has 2 HP CPUs total.
@@ -675,7 +594,7 @@ func TestPctHints_HpRoomTierCNoCrossPackage(t *testing.T) {
 // entire package. This is a regression guard for the punit-keyed
 // rewrite of hpInUseCpus.
 func TestPctHints_HpInUseIsPunitGranular(t *testing.T) {
-	sys := newTwoPunitFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		punits:    makeTwoPunitsPerPkg(2, 2, 2, 2),
@@ -936,7 +855,7 @@ func newAssocOnlyPctForTest(t *testing.T, classes []*policyapi.CPUClass, plans m
 // -- not zero. (Pre-fix the result was 0 because closCpus(HP CLOS)
 // was empty.)
 func TestFreeClassCapacity_AssocOnlyHpFromFallbackCLOS(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		// All CPUs are on CLOS 3 (the LP/fallback CLOS). The HP
@@ -983,7 +902,7 @@ func TestFreeClassCapacity_AssocOnlyHpFromFallbackCLOS(t *testing.T) {
 // GuaranteedHpCpus is non-zero. Prevents over-publishing HP
 // capacity on nodes that cannot actually deliver top turbo.
 func TestFreeClassCapacity_AssocOnlyHpTFDisabledPunitExcluded(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		punits: []pctPunit{
@@ -1011,7 +930,7 @@ func TestFreeClassCapacity_AssocOnlyHpTFDisabledPunitExcluded(t *testing.T) {
 // where no class was classified HP (e.g. no CLOS has a programmed
 // MaxFreq) falls through to the non-HP formula |Allowed \ held|.
 func TestFreeClassCapacity_AssocOnlyNoHpClassification(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		punits: []pctPunit{
@@ -1036,7 +955,7 @@ func TestFreeClassCapacity_AssocOnlyNoHpClassification(t *testing.T) {
 // (PrepareManagedMode enables SST-TF) and the result is the
 // guaranteed-top-turbo sum, capped by per-punit free CPUs.
 func TestFreeClassCapacity_ManagedHpRespectsEligibility(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{
 		supported: true,
 		punits: []pctPunit{
@@ -1074,7 +993,7 @@ func TestFreeClassCapacity_ManagedHpRespectsEligibility(t *testing.T) {
 // TestFreeClassCapacity_UnknownClassReturnsZero: unknown class
 // (no PCT plan) yields 0 regardless of mode.
 func TestFreeClassCapacity_UnknownClassReturnsZero(t *testing.T) {
-	sys := newTwoPackageFakeSys()
+	sys := &fakeSys{}
 	sst := &fakeSst{supported: true}
 	a := newManagedPctForTest(t, []*policyapi.CPUClass{{Name: "hp", PctPriority: "high"}},
 		map[string]*pctClassPlan{"hp": {ClosID: 0}},

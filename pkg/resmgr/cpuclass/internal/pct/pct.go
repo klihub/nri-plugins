@@ -21,7 +21,7 @@ import (
 	idset "github.com/intel/goresctrl/pkg/utils"
 
 	policyapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy"
-	sysfs "github.com/containers/nri-plugins/pkg/lib/hardware/system"
+	"github.com/containers/nri-plugins/pkg/lib/hardware"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/resmgr/cpuclass/internal/types"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
@@ -54,14 +54,11 @@ type pctClassPlan struct {
 	MaxFreq uint // kHz, 0 = leave alone
 }
 
-// Sys is the subset of sysfs.System that Allocator depends
-// on. Defined here so tests can substitute a fake without
-// implementing the full sysfs.System surface.
+// Sys is the part of the machine topology Allocator depends on: the
+// frequency range of one online CPU. A [hardware.Machine] satisfies it.
 type Sys interface {
-	PackageIDs() []idset.ID
-	Package(id idset.ID) sysfs.CPUPackage
-	CPU(id idset.ID) sysfs.CPU
 	CPUIDs() []idset.ID
+	CPU(id idset.ID) *hardware.CPU
 }
 
 // Allocator manages Intel Priority Core Turbo CLOS associations
@@ -956,8 +953,8 @@ type turboInfo struct {
 	minFreqKHz      uint
 }
 
-// discoverTurboInfo reads platform turbo capabilities from sysfs via
-// the first online CPU. Returns nil if no online CPU exposes valid
+// discoverTurboInfo reads platform turbo capabilities from the machine via
+// the first online CPU. It returns nil if no online CPU exposes valid
 // frequency data.
 func discoverTurboInfo(sys Sys) (*turboInfo, error) {
 	cpuIDs := sys.CPUIDs()
@@ -965,12 +962,13 @@ func discoverTurboInfo(sys Sys) (*turboInfo, error) {
 		return nil, fmt.Errorf("no CPUs found in system topology")
 	}
 	for _, id := range cpuIDs {
+		// Sys may be a test fake that returns a nil CPU.
 		cpu := sys.CPU(id)
-		if cpu == nil || !cpu.Online() {
+		if cpu == nil || !cpu.Valid() || !cpu.Online() {
 			continue
 		}
-		freq := cpu.FrequencyRange()
-		baseFreq := cpu.BaseFrequency()
+		freq := cpu.Freq()
+		baseFreq := freq.Base
 		if freq.Min == 0 && freq.Max == 0 {
 			continue
 		}
