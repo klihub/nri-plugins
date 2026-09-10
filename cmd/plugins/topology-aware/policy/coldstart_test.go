@@ -72,10 +72,12 @@ func TestColdStart(t *testing.T) {
 				name:                "demo-coldstart-container",
 				returnValueForGetID: "1234",
 				pod: &mockPod{
-					coldStartTimeout:                   1000 * time.Millisecond,
-					returnValue1FotGetResmgrAnnotation: "demo-coldstart-container: pmem,dram",
-					returnValue2FotGetResmgrAnnotation: true,
-					coldStartContainerName:             "demo-coldstart-container",
+					// Preferences are read with GetEffectiveAnnotation,
+					// so they must be container-scoped annotations.
+					annotations: map[string]string{
+						preferMemoryTypeKey + "/container.demo-coldstart-container": "pmem,dram",
+						preferColdStartKey + "/container.demo-coldstart-container":  "{ duration: 1s }",
+					},
 				},
 			},
 			expectedColdStartTimeout: 1000 * time.Millisecond,
@@ -87,10 +89,10 @@ func TestColdStart(t *testing.T) {
 	}
 	for _, tc := range tcases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Skipf("Coldstart tests are disabled (can't mock enough of the system, lacks CPUs)")
+			m := synthMachine(t, tc.numaNodes)
 
 			policy := &policy{
-				machine: synthMachine(t, tc.numaNodes),
+				machine: m,
 				cache: &mockCache{
 					returnValue1ForLookupContainer: tc.container,
 					returnValue2ForLookupContainer: true,
@@ -103,12 +105,9 @@ func TestColdStart(t *testing.T) {
 			}
 			policy.allocations.policy = policy
 			policy.options.SendEvent = sendEvent
-			// No nodes: the allocator takes them from a hardware.Machine,
-			// which the mocked system cannot provide. The test is skipped
-			// for the same reason.
-			ma, err := libmem.NewAllocator()
+			ma, err := libmem.NewAllocator(libmem.WithMachineNodes(m))
 			if err != nil {
-				panic(err)
+				t.Fatalf("failed to create memory allocator: %v", err)
 			}
 			policy.memAllocator = ma
 
