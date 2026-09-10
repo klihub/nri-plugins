@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	"github.com/containers/nri-plugins/pkg/resmgr/events"
 	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
@@ -93,6 +94,10 @@ func TestColdStart(t *testing.T) {
 
 			policy := &policy{
 				machine: m,
+				// A configured policy always has these sets.
+				allowed:  libcpu.NewCpuMask(),
+				reserved: libcpu.NewCpuMask(),
+				isolated: libcpu.NewCpuMask(),
 				cache: &mockCache{
 					returnValue1ForLookupContainer: tc.container,
 					returnValue2ForLookupContainer: true,
