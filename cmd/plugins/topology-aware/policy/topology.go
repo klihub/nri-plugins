@@ -23,11 +23,6 @@ import (
 	idset "github.com/intel/goresctrl/pkg/utils"
 )
 
-// toCpuMask converts a cpuset parsed from the configuration to a libcpu mask.
-func toCpuMask(cpus cpuset.CPUSet) *libcpu.CpuMask {
-	return libcpu.NewCpuMask(cpus.List()...)
-}
-
 //
 // Packages, dies, clusters and caches
 //
