@@ -21,7 +21,10 @@
 //
 // The index subcommand rebuilds the index.html of a result root from the
 // results.json of every run under it, so that the runs, how they went and how
-// their coverage develops are all one click away.
+// their coverage develops are all one click away. With --refresh it reports on
+// every unpacked run again first: a report is what it was rendered by, so a run
+// published by an older runner links what that runner knew to link, and nothing
+// but reporting on it again brings it up to what we render today.
 //
 // The coverage subcommand reports the coverage in a coverage profile: the
 // coverage of the logic of each plugin, the total over everything
@@ -52,7 +55,7 @@ import (
 )
 
 const usage = `Usage: e2e-report run RESULT_DIR
-       e2e-report index RESULT_ROOT
+       e2e-report index [--refresh] RESULT_ROOT
        e2e-report coverage [--tests N] [--summary FILE] PROFILE
        e2e-report pack RESULT_DIR
        e2e-report serve [--address ADDR] [--live-index] RESULT_ROOT
@@ -102,10 +105,17 @@ func runCmd(args []string) error {
 }
 
 func indexCmd(args []string) error {
-	if len(args) != 1 {
+	flags := flag.NewFlagSet("index", flag.ContinueOnError)
+	refresh := flags.Bool("refresh", false,
+		"report on every unpacked run again, however it was reported on before")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
 		return fmt.Errorf("index takes a single result root directory")
 	}
-	return reportIndex(args[0])
+
+	return reportIndex(flags.Arg(0), *refresh)
 }
 
 func packCmd(args []string) error {
@@ -197,7 +207,6 @@ func reportRun(dir string) error {
 	return nil
 }
 
-// reportIndex rebuilds the index of every run under root.
 // readIndexRun reads what a row of the index of the runs needs of the run in
 // dir, the way reportIndex does but writing nothing: a server has no business
 // reporting on a run, and the one behind the systemd unit could not if it tried.
@@ -227,7 +236,9 @@ func readIndexRun(dir, name string) (*Run, error) {
 	return run, nil
 }
 
-func reportIndex(root string) error {
+// reportIndex rebuilds the index of every run under root, and with refresh the
+// report of every unpacked run along with it.
+func reportIndex(root string, refresh bool) error {
 	if !isDir(root) {
 		return fmt.Errorf("no such directory: %s", root)
 	}
@@ -237,7 +248,7 @@ func reportIndex(root string) error {
 		return err
 	}
 
-	runs := []*Run{}
+	runs, reported := []*Run{}, 0
 	for _, name := range names {
 		dir := filepath.Join(root, name)
 		if !isRun(dir) {
@@ -251,10 +262,16 @@ func reportIndex(root string) error {
 		// may have collected something since: report on it now, which costs
 		// nothing for a run with no results, and gives the index somewhere to
 		// link to. A packed run keeps the report it was packed with.
-		if (run == nil || len(run.Tests) == 0) && !isPacked(dir) {
+		//
+		// With refresh, every unpacked run, whatever it was reported on with
+		// before. A report is what it was rendered by: a run published by an
+		// older runner links what that one knew to link, and nothing but
+		// reporting on it again brings it up to what we render today.
+		if (refresh || run == nil || len(run.Tests) == 0) && !isPacked(dir) {
 			if err := reportRun(dir); err != nil {
 				return err
 			}
+			reported++
 			if run = readRun(dir); run == nil {
 				if run, err = scanRun(dir); err != nil {
 					return err
@@ -289,7 +306,13 @@ func reportIndex(root string) error {
 		return err
 	}
 
-	fmt.Printf("indexed %d test runs in %s\n", len(runs), root)
+	// Worth saying how many were reported on again: it is the slow part, and
+	// with --refresh it is the point of the exercise.
+	again := ""
+	if reported > 0 {
+		again = fmt.Sprintf(", reported on %d of them again", reported)
+	}
+	fmt.Printf("indexed %d test runs in %s%s\n", len(runs), root, again)
 
 	return nil
 }

@@ -119,6 +119,12 @@ It serves a packed run as if its archive had been extracted, serves into the
 tarballs of the tests as well, and reads nothing but what is under the result
 root.
 
+`e2e-report index --refresh` reports on every unpacked run under a root again,
+which is how runs published by an older runner come to be rendered the way one
+published today is: their reports were rendered by whatever generated them, and
+only reporting on them again changes that. Packed runs keep the reports they
+were packed with.
+
 `--live-index` builds the list of runs from the runs under the root for every
 request instead of serving the `index.html` there. Use it where the root is not
 indexed by whoever writes to it — a root filled by `rsync`, or one runs are
