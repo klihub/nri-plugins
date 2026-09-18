@@ -57,9 +57,28 @@ type Server struct {
 	root      string
 	dir       *os.Root
 	liveIndex bool
+	index     indexCache
 	mutex     sync.Mutex
 	tarballs  map[string]*Tarball
 	order     []string
+}
+
+// indexCache is the index of the runs as it was last built, and what the root
+// looked like then. A request which finds nothing changed costs a stat or three
+// per run instead of a read of every report, and one which finds a single run
+// changed pays for that run only.
+type indexCache struct {
+	mutex sync.Mutex
+	print string
+	page  []byte
+	runs  map[string]cachedRun
+}
+
+// cachedRun is a run we have read, and what the files a row of it comes from
+// looked like when we did.
+type cachedRun struct {
+	print string
+	run   *Run
 }
 
 // NewServer serves the results published under root. With liveIndex the index
@@ -468,22 +487,92 @@ li { font-family: monospace; }
 </html>
 `))
 
+// runPrint is what the files a row of a run comes from look like now: the report
+// it is built from, whether there is one to link to, and the log of the runner,
+// which is all that changes while a run is still collecting. Everything a row
+// says comes from these, so a row cannot go stale without one of them moving.
+func (s *Server) runPrint(name string) string {
+	print := &strings.Builder{}
+
+	print.WriteString(name)
+	for _, file := range []string{resultsJSON, indexHTML, runnerLog} {
+		if info, err := s.dir.Stat(path.Join(name, file)); err == nil {
+			fmt.Fprintf(print, "|%s,%d,%d", file, info.Size(), info.ModTime().UnixNano())
+		} else {
+			fmt.Fprintf(print, "|%s,-", file)
+		}
+	}
+	print.WriteString(";")
+
+	return print.String()
+}
+
+// liveIndexPage is the index of the runs as they are now, rendered, reusing
+// whatever has not changed since the last time it was asked for.
+func (s *Server) liveIndexPage() ([]byte, error) {
+	names, err := readDir(s.root)
+	if err != nil {
+		return nil, err
+	}
+
+	// Every name, not only the runs among them, so that a directory which has
+	// become one since is noticed too.
+	prints, whole := make(map[string]string, len(names)), &strings.Builder{}
+	for _, name := range names {
+		prints[name] = s.runPrint(name)
+		whole.WriteString(prints[name])
+	}
+
+	s.index.mutex.Lock()
+	defer s.index.mutex.Unlock()
+
+	if s.index.page != nil && s.index.print == whole.String() {
+		return s.index.page, nil
+	}
+
+	runs, read := []*Run{}, make(map[string]cachedRun, len(names))
+	for _, name := range names {
+		dir := filepath.Join(s.root, name)
+		if !isRun(dir) {
+			continue
+		}
+
+		// Reading a report is what costs here, so a run whose files have not
+		// moved is taken as it was. Built afresh rather than pruned, so a run
+		// which has been pruned drops out of it by itself.
+		if was, cached := s.index.runs[name]; cached && was.print == prints[name] {
+			runs, read[name] = append(runs, was.run), was
+			continue
+		}
+
+		run, err := readIndexRun(dir, name)
+		if err != nil {
+			return nil, err
+		}
+		runs, read[name] = append(runs, run), cachedRun{print: prints[name], run: run}
+	}
+
+	sortRuns(runs)
+
+	page, err := renderPage("index", newIndexPage(runs))
+	if err != nil {
+		return nil, err
+	}
+
+	s.index.print, s.index.page, s.index.runs = whole.String(), page, read
+
+	return page, nil
+}
+
 // serveLiveIndex serves an index of the runs under the root as they are right
 // now, rather than the index.html a run left there, which is stale as soon as
 // the next run publishes. Reading only: reporting on a run is what e2e-report
 // index is for.
 func (s *Server) serveLiveIndex(w http.ResponseWriter, r *http.Request) {
-	runs, err := indexRuns(s.root)
+	page, err := s.liveIndexPage()
 	if err != nil {
 		log.Printf("indexing the runs in %s: %v", s.root, err)
 		http.Error(w, "cannot index the runs", http.StatusInternalServerError)
-		return
-	}
-
-	page, err := renderPage("index", newIndexPage(runs))
-	if err != nil {
-		log.Printf("rendering the index of %s: %v", s.root, err)
-		http.Error(w, "cannot render the index", http.StatusInternalServerError)
 		return
 	}
 

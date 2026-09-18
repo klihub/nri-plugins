@@ -198,48 +198,33 @@ func reportRun(dir string) error {
 }
 
 // reportIndex rebuilds the index of every run under root.
-// indexRuns collects the runs published under root the way reportIndex does,
-// but writes nothing: a server has no business reporting on a run, and the one
-// behind the systemd unit could not if it tried.
-func indexRuns(root string) ([]*Run, error) {
-	names, err := readDir(root)
-	if err != nil {
-		return nil, err
+// readIndexRun reads what a row of the index of the runs needs of the run in
+// dir, the way reportIndex does but writing nothing: a server has no business
+// reporting on a run, and the one behind the systemd unit could not if it tried.
+func readIndexRun(dir, name string) (*Run, error) {
+	run := readRun(dir)
+	if run == nil {
+		scanned, err := scanRun(dir)
+		if err != nil {
+			return nil, err
+		}
+		run = scanned
 	}
 
-	runs := []*Run{}
-	for _, name := range names {
-		dir := filepath.Join(root, name)
-		if !isRun(dir) {
-			continue
-		}
-
-		run := readRun(dir)
-		if run == nil {
-			if run, err = scanRun(dir); err != nil {
-				return nil, err
-			}
-		}
-
-		// A row has to name the directory it links to. That is what a run
-		// called itself for anything the runner published, but the link has
-		// to work even for a run whose report says otherwise.
-		run.Name = name
-		if run.Started == nil {
-			run.Started = startedAt(name, dir)
-		}
-
-		// Link to the report only where there is one to open. A packed run
-		// keeps its own outside the archive, so this tells runs apart by what
-		// is there rather than by whether they are packed.
-		run.Unreported = !exists(filepath.Join(dir, indexHTML))
-
-		runs = append(runs, run)
+	// A row has to name the directory it links to. That is what a run called
+	// itself for anything the runner published, but the link has to work even
+	// for a run whose report says otherwise.
+	run.Name = name
+	if run.Started == nil {
+		run.Started = startedAt(name, dir)
 	}
 
-	sortRuns(runs)
+	// Link to the report only where there is one to open. A packed run keeps
+	// its own outside the archive, so this tells runs apart by what is there
+	// rather than by whether they are packed.
+	run.Unreported = !exists(filepath.Join(dir, indexHTML))
 
-	return runs, nil
+	return run, nil
 }
 
 func reportIndex(root string) error {
