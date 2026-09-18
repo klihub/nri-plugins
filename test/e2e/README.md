@@ -289,6 +289,18 @@ go run ./cmd/e2e-report pack RESULT_DIR
 go run ./cmd/e2e-report serve [--address ADDR] [--live-index] RESULT_ROOT
 ```
 
+A report is what it was rendered by, so a run published by an older runner links
+what that runner knew to link and nothing more. `index --refresh` reports on
+every unpacked run again, bringing the whole root up to what is rendered today;
+a packed run keeps the report it was packed with, since its results are inside
+the archive. A run which collected no coverage at all, because it predates
+coverage collection or its plugins were not built with `COVER=1`, says so
+instead of leaving the coverage of a policy blank:
+
+```shell
+go run ./cmd/e2e-report index [--refresh] RESULT_ROOT
+```
+
 `make e2e-report` builds the tool to `build/bin` for serving results without a
 checkout to run it from; it is not part of any image.
 
