@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -62,6 +63,53 @@ func request(t *testing.T, root, method, path string) *httptest.ResponseRecorder
 func getLive(t *testing.T, root, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	return serve(t, root, true, http.MethodGet, path)
+}
+
+// liveServer is one server to ask more than once, for what it remembers between
+// requests.
+func liveServer(t *testing.T, root string) *Server {
+	t.Helper()
+
+	server, err := NewServer(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return server
+}
+
+func ask(t *testing.T, server *Server, path string) string {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET %s: %d, expected 200", path, recorder.Code)
+	}
+
+	return recorder.Body.String()
+}
+
+// rewriteResults puts data in the results.json of a run, leaving its size and
+// its modification time as they were: a change nothing can notice by looking,
+// which is how a test tells a cached answer from a fresh one.
+func rewriteResults(t *testing.T, dir, data string) {
+	t.Helper()
+
+	path := filepath.Join(dir, resultsJSON)
+	was, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int(was.Size()) != len(data) {
+		t.Fatalf("results.json is %d bytes, the replacement %d", was.Size(), len(data))
+	}
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, was.ModTime(), was.ModTime()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func serve(t *testing.T, root string, live bool, method, path string) *httptest.ResponseRecorder {
@@ -275,6 +323,150 @@ func TestServeNoSuchRoot(t *testing.T) {
 	if _, err := NewServer(filepath.Join(t.TempDir(), "nowhere"), false); err == nil {
 		t.Errorf("serving a directory which is not there did not fail")
 	}
+}
+
+// TestServeLiveIndexCaches checks that the runs are not read again for a root
+// which has not changed. The proof is a change no amount of looking can see:
+// results.json rewritten to the same size, with its modification time put back.
+func TestServeLiveIndexCaches(t *testing.T) {
+	root, name := newRoot(t, false)
+	server := liveServer(t, root)
+
+	first := ask(t, server, "/")
+	if strings.Contains(first, ">FAIL<") {
+		t.Fatalf("the run reads FAIL before anything changed it")
+	}
+
+	rewriteResults(t, filepath.Join(root, name), `{"verdict":"FAIL" }`)
+
+	if again := ask(t, server, "/"); again != first {
+		t.Errorf("the runs were read again for a root which had not changed")
+	}
+}
+
+// TestServeLiveIndexNoticesAChangedRun checks that a run reported on again is
+// read again, which is what the cache must not get in the way of.
+func TestServeLiveIndexNoticesAChangedRun(t *testing.T) {
+	root, name := newRoot(t, false)
+	server := liveServer(t, root)
+
+	first := ask(t, server, "/")
+
+	results := filepath.Join(root, name, resultsJSON)
+	if err := os.WriteFile(results, []byte(`{"verdict":"FAIL"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(results, later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	again := ask(t, server, "/")
+	if again == first {
+		t.Errorf("a run reported on again was not read again")
+	}
+	if !strings.Contains(again, ">FAIL<") {
+		t.Errorf("the verdict of the run did not change")
+	}
+}
+
+// TestServeLiveIndexNoticesRunsComingAndGoing checks that a run published or
+// pruned since the last request is listed, or stops being.
+func TestServeLiveIndexNoticesRunsComingAndGoing(t *testing.T) {
+	root, name := newRoot(t, false)
+	server := liveServer(t, root)
+
+	if body := ask(t, server, "/"); strings.Contains(body, "test-2026-09-18-0210") {
+		t.Fatalf("a run which is not there yet is listed")
+	}
+
+	newOngoingRun(t, root, "test-2026-09-18-0210")
+	if body := ask(t, server, "/"); !strings.Contains(body, "test-2026-09-18-0210") {
+		t.Errorf("a run published since the last request is not listed")
+	}
+
+	if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+		t.Fatal(err)
+	}
+	if body := ask(t, server, "/"); strings.Contains(body, name) {
+		t.Errorf("a run pruned since the last request is still listed")
+	}
+}
+
+// TestServeLiveIndexNoticesARunGoingOn checks that a run still collecting is
+// read again as it goes, where nothing but its log has changed.
+func TestServeLiveIndexNoticesARunGoingOn(t *testing.T) {
+	root, _ := newRoot(t, false)
+	ongoing := newOngoingRun(t, root, "test-2026-09-18-0210")
+	server := liveServer(t, root)
+
+	first := ask(t, server, "/")
+
+	// A test which has finished since, and the log the runner keeps appending.
+	test := filepath.Join(ongoing, "vm", suiteDir, "balloons", "test01")
+	if err := os.MkdirAll(test, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(test, summaryTxt),
+		[]byte("Test verdict: PASS\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(ongoing, runnerLog)
+	if err := os.WriteFile(log, []byte("still going\nand going\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(log, later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	if again := ask(t, server, "/"); again == first {
+		t.Errorf("a run which collected another test since was not read again")
+	}
+}
+
+// TestServeLiveIndexConcurrently checks that the index one server remembers
+// survives being asked for from several requests at once, which is how it is
+// asked for. Worth running under -race.
+func TestServeLiveIndexConcurrently(t *testing.T) {
+	root, name := newRoot(t, false)
+	newOngoingRun(t, root, "test-2026-09-18-0210")
+	server := liveServer(t, root)
+
+	// One writer moving a run about under the readers, so that they race a
+	// rebuild and not only each other.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		results := filepath.Join(root, name, resultsJSON)
+		for i := range 20 {
+			stamp := time.Now().Add(time.Duration(i) * time.Minute)
+			_ = os.Chtimes(results, stamp, stamp)
+		}
+	}()
+
+	var waiting sync.WaitGroup
+	for range 8 {
+		waiting.Add(1)
+		go func() {
+			defer waiting.Done()
+			for range 20 {
+				recorder := httptest.NewRecorder()
+				server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+				if recorder.Code != http.StatusOK {
+					t.Errorf("GET /: %d, expected 200", recorder.Code)
+					return
+				}
+				if !strings.Contains(recorder.Body.String(), name) {
+					t.Errorf("the index does not name %s", name)
+					return
+				}
+			}
+		}()
+	}
+
+	waiting.Wait()
+	<-done
 }
 
 // TestServeLiveIndexSkipsLatest checks that the link at the newest run is not
