@@ -26,6 +26,11 @@ import (
 // indexTitle is what the index of all runs is called.
 const indexTitle = "NRI reference plugins e2e test results"
 
+// noCoverage is what a coverage column of the index says for a run which
+// collected no coverage data, where a percentage would go. The report of such a
+// run says it at length; a column this narrow cannot.
+const noCoverage = "n/a"
+
 // htmlLink is a piece of text on a page, linked to somewhere if there is
 // anywhere to link it to.
 type htmlLink struct {
@@ -390,7 +395,11 @@ func newIndexPage(runs []*Run) *indexPage {
 			Version:  version,
 		}
 		for _, plugin := range page.Plugins {
-			percent := ""
+			// A run from before coverage was collected has none, and neither
+			// has one whose plugins were built without instrumentation. Say so:
+			// an empty cell reads as no coverage reached rather than none
+			// measured, and the two are not the same thing at all.
+			percent := noCoverage
 			if data := run.Coverage.Policies[plugin]; data != nil {
 				if data.PluginPercent != nil {
 					percent = data.PluginPercent.String()
