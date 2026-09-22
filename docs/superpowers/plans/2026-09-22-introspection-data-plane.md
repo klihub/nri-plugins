@@ -2674,6 +2674,58 @@ func (mux *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 Add a regression test in `pkg/http/http_test.go` that a handler blocked
 mid-request does not prevent `Unregister` from returning.
 
+`Unregister`'s doc comment should also say that it does not wait for in-flight
+handlers, since that stops being implicit once the lock is released: the one
+existing caller, `metrics.Stop()`, unregisters and then shuts its provider down
+on the next line, which can now overlap a scrape in progress.
+
+**The same defect one level out, and this one is worse.** `Server.ServeHTTP`
+does the identical thing with the *server's* lock:
+
+```go
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.RLock()
+	defer s.RUnlock()
+	s.mux.ServeHTTP(w, r)
+}
+```
+
+Every request in production goes through it, because the server registers
+itself as its own handler. `Server.Stop()` takes the write lock, and
+`instrumentation.Reconfigure()` unconditionally calls `Restart()` → `stop()` →
+`srv.Stop()` — from inside `reconfigure()`'s `apply` closure, which runs under
+the resource manager's write lock. So a request in flight when a configuration
+update arrives holds the server read lock and waits for the resmgr read lock,
+while the writer holds the resmgr write lock and waits for the server write
+lock. That is the same cycle, on *every* configuration update rather than only
+an address change, and fixing `ServeMux` alone does not close it.
+
+Today it needs a request to be mid-collection. Once Task 8 lands, an event
+stream holds the server read lock for the whole life of its connection, so one
+connected client wedges every configuration update until it disconnects.
+
+`s.mux` is assigned once in `NewServer` and never replaced, so the fix is the
+same shape and simpler:
+
+```go
+// ServeHTTP serves the given HTTP request.
+//
+// The handler runs with our lock released, so that a long-lived handler —
+// an event stream, say — cannot block Stop, Start or Restart for the
+// lifetime of its connection. The mux is set once at construction and never
+// replaced, so the dispatch target is stable.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.RLock()
+	mux := s.mux
+	s.RUnlock()
+
+	mux.ServeHTTP(w, r)
+}
+```
+
+Give this one a regression test too: a handler blocked mid-request must not
+prevent `Stop()` from returning.
+
 **A deadlock you must not write.** The NRI handlers in `pkg/resmgr/nri.go` hold
 the resource manager's write lock for their whole duration (see the `m.Lock()`
 calls at lines 360, 382, 427, 467, 545, 591, 653, 692), and `Invalidate()` will
