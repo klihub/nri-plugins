@@ -3513,12 +3513,14 @@ func TestServeEvents(t *testing.T) {
 // when the test says so.
 //
 // Read it through body(), headerGet() and status() — every one of those
-// takes the mutex. Header() returns the live map for the handler's own use
-// and is not safe for a test to read concurrently.
+// takes the mutex, and headerGet reads a clone taken when the handler
+// called WriteHeader. Header() returns the live map for the handler's own
+// use; a test must never touch it.
 type syncRecorder struct {
 	mu      sync.Mutex
 	buf     bytes.Buffer
-	hdr     http.Header
+	hdr     http.Header // the handler's, unguarded by design
+	sent    http.Header // cloned under mu by WriteHeader
 	code    int
 	written chan struct{}
 }
@@ -3538,6 +3540,12 @@ func (r *syncRecorder) WriteHeader(code int) {
 	defer r.mu.Unlock()
 
 	r.code = code
+
+	// Snapshot the headers under the mutex. A conforming handler sets them
+	// all before WriteHeader, and this is what makes headerGet meaningful:
+	// locking only the read side of a map the handler still owns would
+	// establish no happens-before at all.
+	r.sent = r.hdr.Clone()
 }
 
 func (r *syncRecorder) Write(p []byte) (int, error) {
@@ -3562,12 +3570,14 @@ func (r *syncRecorder) body() string {
 	return r.buf.String()
 }
 
-// headerGet reads a response header safely while the handler runs.
+// headerGet reads a header the handler has already sent. It is safe while
+// the handler is still streaming, because it reads the clone WriteHeader
+// took rather than the map the handler owns.
 func (r *syncRecorder) headerGet(key string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return r.hdr.Get(key)
+	return r.sent.Get(key)
 }
 
 // status reads the response status safely while the handler runs.
@@ -4057,10 +4067,30 @@ In `pkg/resmgr/resource-manager.go`, next to `updateTopologyZones()`:
 // Call this wherever resource assignments may have changed. Keeping the
 // publishers together means a new one cannot be forgotten at one of the
 // call sites.
+//
+// Safe to call with our write lock held: the topology zone and extended
+// resource publishers hand off to the agent asynchronously, and
+// invalidateIntrospection takes only the introspection server's own mutex
+// and never collects.
 func (m *resmgr) publishNodeState() {
 	m.updateTopologyZones()
 	m.updateNodeExtendedResources()
+	m.invalidateIntrospection()
+}
 
+// invalidateIntrospection marks the introspection snapshot stale.
+//
+// Call this wherever the snapshot's *contents* change, which is a wider set
+// of places than where resource assignments change: the snapshot carries the
+// whole pod and container list, so inserting or deleting a pod, a container
+// starting, or a container's resources being updated all make the cached
+// body wrong even when no pool-level allocation moved.
+//
+// Those sites deliberately call this rather than publishNodeState(): they
+// have no business pushing topology zone CRs or extended resources to the
+// API server, and making them do so would be a behaviour change well
+// outside introspection.
+func (m *resmgr) invalidateIntrospection() {
 	if m.introspect != nil {
 		m.introspect.Invalidate()
 	}
@@ -4122,13 +4152,42 @@ Run: `grep -rn 'updateTopologyZones()\|updateNodeExtendedResources()' pkg/resmgr
 Expected: each appears exactly twice — once as its own declaration and once
 inside `publishNodeState()`. Anything else is a site you missed.
 
-- [ ] **Step 4: Verify it builds and the suite still passes**
+- [ ] **Step 4: Invalidate where the snapshot's contents change**
+
+The four sites above are where *assignments* change. The snapshot carries more
+than assignments — it carries the whole pod and container list — so these five
+handlers in `pkg/resmgr/nri.go` also make the cached body wrong, and today none
+of them publishes anything:
+
+| Handler | What it changes |
+|---|---|
+| `RunPodSandbox` | `cache.InsertPod` |
+| `RemovePodSandbox` | `cache.DeletePod` |
+| `StartContainer` | `UpdateState(Running)` and `policy.HandleEvent` |
+| `UpdateContainer` | `m.policy.UpdateResources(c)` — a real allocation change |
+| `RemoveContainer` | `cache.DeleteContainer` |
+
+Without this, `/introspect` serves the cached body under an unchanged
+generation and the event stream says nothing, until one of the four
+assignment sites happens to fire. On an otherwise idle node a deleted pod
+stays in the answer indefinitely, and the heartbeat does not help — it carries
+no generation, so a client refetching gets the same bytes back.
+
+Add `m.invalidateIntrospection()` at the end of each of those five handlers,
+after the mutation and any policy call, and **not** `publishNodeState()`: these
+handlers have no business pushing topology zone CRs or extended resources.
+
+Run: `grep -c 'invalidateIntrospection()' pkg/resmgr/nri.go`
+
+Expected: 5.
+
+- [ ] **Step 5: Verify it builds and the suite still passes**
 
 Run: `go build ./... && go test ./pkg/resmgr/... -race`
 
 Expected: success.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 gofmt -l pkg/resmgr/
