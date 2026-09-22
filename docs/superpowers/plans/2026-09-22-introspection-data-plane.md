@@ -4387,7 +4387,7 @@ filter summing all commitment and checking it exceeds zero would pass before
 the container was ever created — a green assertion that means nothing is worse
 than none.
 
-- [ ] **Step 5: Document the knob**
+- [ ] **Step 4: Document the knob**
 
 Two hand-maintained lists of instrumentation options exist and are now
 incomplete, because the option they omit became real in Task 7:
@@ -4405,7 +4405,7 @@ Run: `grep -n 'introspection' docs/resource-policy/policy/*.md`
 
 Expected: a hit in each of the two files.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add test/e2e/ docs/resource-policy/
