@@ -19,6 +19,7 @@ import (
 	"path"
 	"testing"
 
+	"github.com/containers/nri-plugins/pkg/introspect/api"
 	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
@@ -38,6 +39,9 @@ func discover(t *testing.T, sample string) sysfs.System {
 		t.Skipf("fixture %s missing, run ./test-setup.sh: %v", sample, err)
 	}
 
+	// The sysroot is process-global, and later tasks add tests to this
+	// package that must not inherit it.
+	t.Cleanup(func() { sysfs.SetSysRoot("") })
 	sysfs.SetSysRoot(root)
 
 	sys, err := sysfs.DiscoverSystem()
@@ -128,6 +132,16 @@ func TestCollectHardwareMapping(t *testing.T) {
 			t.Errorf("CPU %d: NUMA node %d, expected %d",
 				c.ID, c.NUMANode, cpu.NodeID())
 		}
+		// Die and Cluster are asserted too: both are usually 0, so a
+		// swapped assignment would be invisible without this.
+		if c.Die != int(cpu.DieID()) {
+			t.Errorf("CPU %d: die %d, expected %d",
+				c.ID, c.Die, cpu.DieID())
+		}
+		if c.Cluster != int(cpu.ClusterID()) {
+			t.Errorf("CPU %d: cluster %d, expected %d",
+				c.ID, c.Cluster, cpu.ClusterID())
+		}
 		if c.Core != int(cpu.CoreID()) {
 			t.Errorf("CPU %d: core %d, expected %d",
 				c.ID, c.Core, cpu.CoreID())
@@ -164,6 +178,86 @@ func TestCollectHardwareMapping(t *testing.T) {
 		if union.String() != p.CPUs {
 			t.Errorf("package %d: dies cover %q, package has %q",
 				p.ID, union.String(), p.CPUs)
+		}
+	}
+}
+
+// TestCollectHardwareNodeAssociation cross-checks the two independent
+// encodings of the node-to-package relation: Die.NUMANodes, derived from the
+// package side, against NUMANode.Package and NUMANode.Die, derived from the
+// node side. Agreement is not automatic, and without this the whole
+// association could go missing unnoticed.
+func TestCollectHardwareNodeAssociation(t *testing.T) {
+	sys := discover(t, "sample2")
+	hw := collectHardware(sys)
+
+	byID := map[int]*api.NUMANode{}
+	for _, n := range hw.NUMANodes {
+		byID[n.ID] = n
+	}
+
+	listed := map[int]bool{}
+	for _, p := range hw.Packages {
+		for _, d := range p.Dies {
+			for _, id := range d.NUMANodes {
+				listed[id] = true
+
+				n, ok := byID[id]
+				if !ok {
+					t.Errorf("package %d die %d lists unknown NUMA node %d",
+						p.ID, d.ID, id)
+					continue
+				}
+				if n.Package == nil || n.Die == nil {
+					t.Errorf("NUMA node %d is listed by package %d die %d "+
+						"but claims no package or die", id, p.ID, d.ID)
+					continue
+				}
+				if *n.Package != p.ID || *n.Die != d.ID {
+					t.Errorf("NUMA node %d claims package %d die %d, "+
+						"but is listed by package %d die %d",
+						id, *n.Package, *n.Die, p.ID, d.ID)
+				}
+			}
+		}
+	}
+
+	if len(listed) == 0 {
+		t.Fatal("no package lists any NUMA node, so nothing was checked")
+	}
+
+	// Conversely, a node claiming a package must be listed by one.
+	for _, n := range hw.NUMANodes {
+		if n.Package != nil && !listed[n.ID] {
+			t.Errorf("NUMA node %d claims package %d but no die lists it",
+				n.ID, *n.Package)
+		}
+	}
+}
+
+// TestCollectHardwareCoreKinds checks the only derived, non-pass-through
+// mapping in the collector. The sample1 fixture reports both a P-core and an
+// E-core set, so this is not vacuous.
+func TestCollectHardwareCoreKinds(t *testing.T) {
+	sys := discover(t, "sample1")
+	hw := collectHardware(sys)
+
+	if len(hw.CoreKinds) < 2 {
+		t.Fatalf("expected at least 2 core kinds in sample1, got %v",
+			hw.CoreKinds)
+	}
+
+	tagged := map[int]string{}
+	for kind, cpus := range hw.CoreKinds {
+		for _, id := range cpuset.MustParse(cpus).List() {
+			tagged[id] = kind
+		}
+	}
+
+	for _, c := range hw.CPUs {
+		if c.CoreKind != tagged[c.ID] {
+			t.Errorf("CPU %d: core kind %q, expected %q",
+				c.ID, c.CoreKind, tagged[c.ID])
 		}
 	}
 }

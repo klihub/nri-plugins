@@ -15,9 +15,10 @@
 package introspect
 
 import (
+	"slices"
+
 	"github.com/containers/nri-plugins/pkg/introspect/api"
 	logger "github.com/containers/nri-plugins/pkg/log"
-	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 
 	system "github.com/containers/nri-plugins/pkg/sysfs"
 )
@@ -72,7 +73,9 @@ func collectHardware(sys system.System) *api.Hardware {
 			CPUs:         node.CPUSet().String(),
 			MemoryType:   node.GetMemoryType().String(),
 			NormalMemory: node.HasNormalMemory(),
-			Distance:     node.Distance(),
+			// Cloned: sysfs hands out its own slice, and a snapshot
+			// must not alias discovered system state.
+			Distance: slices.Clone(node.Distance()),
 		}
 		// A memory-only node belongs to no package or die. sysfs
 		// leaves both IDs at zero for such a node, which is
@@ -82,12 +85,32 @@ func collectHardware(sys system.System) *api.Hardware {
 			pkgID, dieID := int(node.PackageID()), int(node.DieID())
 			n.Package, n.Die = &pkgID, &dieID
 		}
-		if info, err := node.MemoryInfo(); err == nil && info != nil {
+		if info, err := node.MemoryInfo(); err != nil || info == nil {
+			log.Warnf("no memory info for NUMA node %d: %v", id, err)
+		} else {
 			n.Capacity = int64(info.MemTotal)
-		} else if err != nil {
-			log.Warnf("failed to get memory info for NUMA node %d: %v", id, err)
 		}
 		hw.NUMANodes = append(hw.NUMANodes, n)
+	}
+
+	// Collect the core-kind sets first, so that each CPU can be tagged
+	// with its own kind below and a consumer needs no reverse lookup.
+	// The sets are used rather than sysfs.CPU.CoreKind() because the
+	// latter's zero value is "P-core", which would label every CPU on
+	// hardware that reports no core kinds at all.
+	kindOfCPU := map[int]string{}
+	for _, kind := range sys.CoreKinds() {
+		cpus := sys.CoreKindCPUs(kind)
+		if cpus.IsEmpty() {
+			continue
+		}
+		if hw.CoreKinds == nil {
+			hw.CoreKinds = map[string]string{}
+		}
+		hw.CoreKinds[kind.String()] = cpus.String()
+		for _, cpu := range cpus.List() {
+			kindOfCPU[cpu] = kind.String()
+		}
 	}
 
 	for _, id := range sys.CPUIDs() {
@@ -101,6 +124,7 @@ func collectHardware(sys system.System) *api.Hardware {
 			NUMANode: int(cpu.NodeID()),
 			Core:     int(cpu.CoreID()),
 			Threads:  cpu.ThreadCPUSet().String(),
+			CoreKind: kindOfCPU[int(id)],
 			Online:   cpu.Online(),
 			Isolated: cpu.Isolated(),
 			BaseFreq: freq.Base,
@@ -108,28 +132,6 @@ func collectHardware(sys system.System) *api.Hardware {
 			MaxFreq:  freq.Max,
 		}
 		hw.CPUs = append(hw.CPUs, c)
-	}
-
-	for _, kind := range sys.CoreKinds() {
-		cpus := sys.CoreKindCPUs(kind)
-		if cpus.IsEmpty() {
-			continue
-		}
-		if hw.CoreKinds == nil {
-			hw.CoreKinds = map[string]string{}
-		}
-		hw.CoreKinds[kind.String()] = cpus.String()
-	}
-
-	// Tag each CPU with its core kind, so a consumer needs no reverse
-	// lookup through CoreKinds.
-	for kind, cpus := range hw.CoreKinds {
-		set := cpuset.MustParse(cpus)
-		for _, c := range hw.CPUs {
-			if set.Contains(c.ID) {
-				c.CoreKind = kind
-			}
-		}
 	}
 
 	return hw
