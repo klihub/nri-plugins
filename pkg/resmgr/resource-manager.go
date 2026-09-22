@@ -24,18 +24,22 @@ import (
 	"github.com/containers/nri-plugins/pkg/healthz"
 	"github.com/containers/nri-plugins/pkg/instrumentation"
 	"github.com/containers/nri-plugins/pkg/instrumentation/coverage"
+	"github.com/containers/nri-plugins/pkg/introspect/api"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/pidfile"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	"github.com/containers/nri-plugins/pkg/resmgr/control"
 	"github.com/containers/nri-plugins/pkg/resmgr/dra"
+	"github.com/containers/nri-plugins/pkg/resmgr/introspect"
 	"github.com/containers/nri-plugins/pkg/resmgr/policy"
 	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/topology"
 	"github.com/containers/nri-plugins/pkg/utils"
+	"github.com/containers/nri-plugins/pkg/version"
 	"sigs.k8s.io/yaml"
 
 	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1"
+	cfgintr "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/instrumentation"
 	"github.com/containers/nri-plugins/pkg/irq"
 )
 
@@ -67,6 +71,9 @@ type resmgr struct {
 	rdt     *rdtControl     // control for RDT allocation and monitoring
 	blkio   *blkioControl   // control for block I/O prioritization and throttling
 	dra     *dra.Plugin     // DRA kubelet plugin, if DRA is enabled
+
+	introspect *introspect.Server // introspection interface
+
 	running bool
 }
 
@@ -119,6 +126,7 @@ func NewResourceManager(backend policy.Backend, agt *agent.Agent) (ResourceManag
 	}
 
 	m.setupHealthCheck()
+	m.setupIntrospection()
 	m.setupCoverage()
 
 	return m, nil
@@ -189,6 +197,7 @@ func (m *resmgr) start(cfg cfgapi.ResmgrConfig) error {
 	if err := instrumentation.Reconfigure(&mCfg.Instrumentation); err != nil {
 		return err
 	}
+	m.configureIntrospection(&mCfg.Instrumentation)
 
 	if err := m.blkio.configure(&mCfg.Control.BlockIO); err != nil {
 		return err
@@ -298,6 +307,50 @@ func (m *resmgr) setupHealthCheck() {
 	healthz.Setup(mux)
 }
 
+// setupIntrospection prepares the introspection interface. It is created
+// disabled; configuration decides whether it is enabled.
+func (m *resmgr) setupIntrospection() {
+	mux := instrumentation.HTTPServer().GetMux()
+	m.introspect = introspect.New(mux, m.collectIntrospection)
+}
+
+// configureIntrospection enables or disables introspection per config.
+func (m *resmgr) configureIntrospection(cfg *cfgintr.Config) {
+	if m.introspect == nil {
+		return
+	}
+	if cfg.IntrospectionEnabled() {
+		m.introspect.Enable()
+	} else {
+		m.introspect.Disable()
+	}
+}
+
+// collectIntrospection collects a snapshot of our state.
+//
+// This runs on an HTTP handler goroutine, so it takes the read lock to
+// avoid collecting halfway through an allocation. A request can therefore
+// block behind a long allocation, which is acceptable for a read-only
+// inspection interface.
+func (m *resmgr) collectIntrospection() *api.Snapshot {
+	m.RLock()
+	defer m.RUnlock()
+
+	policyName := ""
+	if m.policy != nil {
+		policyName = m.policy.ActivePolicy()
+	}
+
+	return introspect.Collect(&introspect.Input{
+		NodeName: m.agent.NodeName(),
+		Policy:   policyName,
+		Version:  version.Version,
+		System:   m.policy.System(),
+		Cache:    introspect.CacheOf(m.cache),
+		Config:   m.cfg,
+	})
+}
+
 // setupCoverage prepares the resource manager for serving coverage data.
 func (m *resmgr) setupCoverage() {
 	if !utils.TestAPIsEnabled() {
@@ -362,6 +415,7 @@ func (m *resmgr) reconfigure(cfg cfgapi.ResmgrConfig) error {
 		if err := instrumentation.Reconfigure(&mCfg.Instrumentation); err != nil {
 			return err
 		}
+		m.configureIntrospection(&mCfg.Instrumentation)
 		if err := m.control.StartStopControllers(&mCfg.Control); err != nil {
 			log.Warnf("failed to restart controllers: %v", err)
 		}

@@ -460,3 +460,36 @@ func isNil(cfg cfgapi.ResmgrConfig) bool {
 
 	return v.Kind() == reflect.Ptr && v.IsNil()
 }
+
+// cacheAdapter adapts the resource manager cache to our Cache interface.
+// Go does not convert []cache.Pod to []Pod implicitly, so the slices are
+// rebuilt. It is a handful of pointers per request on a read-only path.
+type cacheAdapter struct {
+	cache cache.Cache
+}
+
+// CacheOf adapts a resource manager cache for collection.
+func CacheOf(c cache.Cache) Cache {
+	if c == nil {
+		return nil
+	}
+	return &cacheAdapter{cache: c}
+}
+
+func (a *cacheAdapter) GetPods() []Pod {
+	pods := a.cache.GetPods()
+	out := make([]Pod, 0, len(pods))
+	for _, p := range pods {
+		out = append(out, p)
+	}
+	return out
+}
+
+func (a *cacheAdapter) GetContainers() []Container {
+	containers := a.cache.GetContainers()
+	out := make([]Container, 0, len(containers))
+	for _, c := range containers {
+		out = append(out, c)
+	}
+	return out
+}

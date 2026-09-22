@@ -138,6 +138,8 @@ type Backend interface {
 type Policy interface {
 	// ActivePolicy returns the name of the policy backend in use.
 	ActivePolicy() string
+	// System returns the discovered system topology.
+	System() system.System
 	// Start starts up policy, prepare for serving resource management requests.
 	Start(any) error
 	// Reconfigure the policy.
@@ -260,6 +262,11 @@ func (p *policy) ActivePolicy() string {
 		return p.active.Name()
 	}
 	return ""
+}
+
+// System returns the discovered system topology.
+func (p *policy) System() system.System {
+	return p.system
 }
 
 // Start starts up policy, preparing it for serving requests.
