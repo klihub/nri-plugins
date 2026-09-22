@@ -16,6 +16,7 @@ package introspect
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -396,7 +397,7 @@ type Input struct {
 func Collect(in *Input) *api.Snapshot {
 	snap := &api.Snapshot{
 		Version:   api.Version,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UTC(),
 		Node: api.Node{
 			Name:    in.NodeName,
 			Policy:  in.Policy,
@@ -419,18 +420,17 @@ func Collect(in *Input) *api.Snapshot {
 // interpreted: a consumer that is not itself policy-specific should display
 // it, not parse it.
 func collectConfig(cfg cfgapi.ResmgrConfig) *api.Config {
-	if cfg == nil {
+	if isNil(cfg) {
 		return nil
 	}
 
 	c := &api.Config{}
 
-	if meta := cfg.GetObjectMeta(); meta != nil {
-		c.Name = meta.GetName()
-		c.Namespace = meta.GetNamespace()
-		c.Generation = meta.GetGeneration()
-		c.ResourceVersion = meta.GetResourceVersion()
-	}
+	meta := cfg.GetObjectMeta()
+	c.Name = meta.GetName()
+	c.Namespace = meta.GetNamespace()
+	c.Generation = meta.GetGeneration()
+	c.ResourceVersion = meta.GetResourceVersion()
 
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -440,4 +440,23 @@ func collectConfig(cfg cfgapi.ResmgrConfig) *api.Config {
 	}
 
 	return c
+}
+
+// isNil reports whether a configuration interface is nil or holds a nil
+// pointer.
+//
+// This is not pedantry. The concrete types satisfy ResmgrConfig's embedded
+// ObjectMetaAccessor by promoting GetObjectMeta() from an embedded
+// metav1.ObjectMeta, so calling it on a typed nil pointer dereferences that
+// nil and panics — inside an HTTP handler. A plain cfg == nil does not catch
+// a typed nil, so the invariant is enforced here rather than trusted of
+// every future caller.
+func isNil(cfg cfgapi.ResmgrConfig) bool {
+	if cfg == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(cfg)
+
+	return v.Kind() == reflect.Ptr && v.IsNil()
 }

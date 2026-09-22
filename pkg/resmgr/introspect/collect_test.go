@@ -746,6 +746,12 @@ func TestCollect(t *testing.T) {
 		t.Errorf("config data does not carry the configuration: %s",
 			snap.Config.Data)
 	}
+	// Data must be the whole resource, not just its spec: the metadata
+	// rides along inside it as well as in the sibling fields.
+	if !strings.Contains(string(snap.Config.Data), `"name":"node.worker-1"`) {
+		t.Errorf("config data does not carry the metadata: %s",
+			snap.Config.Data)
+	}
 
 	// A snapshot must marshal, since that is all the server does with it.
 	if _, err := json.Marshal(snap); err != nil {
@@ -762,7 +768,25 @@ func TestCollectWithoutConfig(t *testing.T) {
 	if snap.Hardware != nil {
 		t.Errorf("expected no hardware section, got %+v", snap.Hardware)
 	}
+	if len(snap.Pods) != 0 || len(snap.Containers) != 0 {
+		t.Errorf("expected no pods or containers, got %d and %d",
+			len(snap.Pods), len(snap.Containers))
+	}
 	if snap.Derived == nil {
 		t.Error("derived section should still be present")
+	}
+}
+
+// TestCollectConfigTypedNil covers the typed-nil case: an interface holding
+// a nil pointer is not == nil, and the promoted GetObjectMeta() on one
+// panics. Without the isNil guard this test panics rather than failing.
+func TestCollectConfigTypedNil(t *testing.T) {
+	var cfg *fakeConfig // nil pointer, non-nil interface once assigned
+
+	snap := Collect(&Input{NodeName: "worker-1", Policy: "none", Config: cfg})
+
+	if snap.Config != nil {
+		t.Errorf("expected no config section for a typed nil, got %+v",
+			snap.Config)
 	}
 }
