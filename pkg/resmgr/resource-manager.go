@@ -327,6 +327,16 @@ func (m *resmgr) configureIntrospection(cfg *cfgintr.Config) {
 		return
 	}
 	if cfg.IntrospectionEnabled() {
+		// Our endpoints are registered with the instrumentation HTTP
+		// server's mux, and that server does not listen at all without an
+		// address. Enabling introspection without one is a no-op, so say
+		// so instead of logging that the interface is being enabled and
+		// leaving the user to wonder why nothing answers.
+		if cfg.HTTPEndpoint == "" {
+			log.Warnf("introspection is enabled but instrumentation.httpEndpoint" +
+				" is empty, so nothing is served; set it to an address," +
+				" for instance \":8891\"")
+		}
 		m.introspect.Enable()
 	} else {
 		m.introspect.Disable()

@@ -241,7 +241,10 @@ verify-introspect-disabled() { # script API
     # to a port nothing is listening on yet gives curl's '000', which never
     # satisfies the check, so a premature first attempt times out here
     # instead of failing the test for the wrong reason.
-    vm-run-until --timeout "${1:-10}" "test \$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --noproxy localhost $verify_introspect_url) = 404" || {
+    # The wait runs in a subshell for the same reason as in
+    # verify-introspect-jq: vm-run-until exits the script on timeout, so an
+    # unwrapped call would make the error handling below dead code.
+    ( vm-run-until --timeout "${1:-10}" "test \$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --noproxy localhost $verify_introspect_url) = 404" ) || {
         command-error "expected HTTP 404 from $verify_introspect_url"
     }
 }

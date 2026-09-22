@@ -1467,7 +1467,10 @@ plugin](https://github.com/kubernetes-sigs/scheduler-plugins/blob/master/pkg/nod
 - `introspection.enabled` (boolean): Enable the introspection
   interface at `/introspect`, disabled by default. Serves a JSON
   snapshot of the node topology, configuration and resource
-  allocation state.
+  allocation state. The same setting also serves a Server-Sent
+  Events stream at `/introspect/events`, which emits an event
+  whenever the snapshot changes, so a client can re-fetch
+  `/introspect` instead of polling it.
 - `samplingRatePerMillion` (integer): Tracing sample rate (e.g.,
   `100000` for 10%).
 - `tracingCollector` (string): External tracing endpoint (e.g.,

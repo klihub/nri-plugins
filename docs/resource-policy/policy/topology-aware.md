@@ -292,6 +292,9 @@ Additionally, the following sub-configuration is available for instrumentation:
   - `introspection.enabled`: if set to True, a JSON introspection interface
      is served at `/introspect`, disabled by default. Provides a snapshot of
      the node topology, effective configuration and resource allocation state.
+     A Server-Sent Events stream is served at `/introspect/events` by the same
+     setting. It emits an event whenever the snapshot changes, so a client can
+     re-fetch `/introspect` instead of polling it.
 
 ### Reserved and Available Resources
 

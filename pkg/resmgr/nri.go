@@ -302,6 +302,18 @@ func (p *nriPlugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, con
 	}()
 
 	m := p.resmgr
+	// Synchronize mutates the cache, whose pod and container maps have no
+	// mutex of their own, so it must hold the write lock: a concurrent
+	// reader — the introspection collector, for one — racing these writes
+	// is a runtime throw, not a stale answer.
+	//
+	// The cost is that syncWithNRI() waits for GoListPodResources, up to
+	// podResListTimeout — two seconds — with the lock held, where
+	// previously nothing was held across that call. On a reconnect every
+	// other NRI handler blocks for that long. This is accepted: a
+	// reconnect is rare, the handlers it delays would have to wait for a
+	// consistent cache anyway, and correctness is not negotiable against
+	// it.
 	m.Lock()
 	defer m.Unlock()
 
