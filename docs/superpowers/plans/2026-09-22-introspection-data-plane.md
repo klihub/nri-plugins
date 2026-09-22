@@ -1409,7 +1409,10 @@ func TestCollectWorkloads(t *testing.T) {
 				cpuShares:    2048,
 				cpuQuota:     400000,
 				cpuPeriod:    100000,
-				memoryLimit:  1073741824,
+				// 1.5Gi, distinct from both the memory request (1Gi)
+				// and the memory limit (2Gi), so that sourcing the
+				// applied limit from either one fails a test.
+				memoryLimit: 1610612736,
 				rdtClass:     "burstable",
 				blockIOClass: "",
 				// Out of lexical order, so the collector's sort is
@@ -1486,8 +1489,8 @@ func TestCollectWorkloads(t *testing.T) {
 		got.Applied.CPUPeriod != 100000 {
 		t.Errorf("unexpected applied cgroup parameters: %+v", got.Applied)
 	}
-	if got.Applied.MemoryLimit != 1073741824 {
-		t.Errorf("applied memory limit %d, expected 1073741824",
+	if got.Applied.MemoryLimit != 1610612736 {
+		t.Errorf("applied memory limit %d, expected 1610612736",
 			got.Applied.MemoryLimit)
 	}
 
@@ -1559,6 +1562,13 @@ func TestCollectWorkloadsIsOrdered(t *testing.T) {
 	}
 
 	pods, containers := collectWorkloads(c)
+
+	// Guard against passing vacuously: IsSorted is true of an empty
+	// slice, so a collector that returned nothing would look ordered.
+	if len(pods) != 3 || len(containers) != 3 {
+		t.Fatalf("expected 3 pods and 3 containers, got %d and %d",
+			len(pods), len(containers))
+	}
 
 	podIDs := make([]string, 0, len(pods))
 	for _, p := range pods {
