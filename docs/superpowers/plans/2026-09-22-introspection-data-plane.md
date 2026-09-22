@@ -3047,6 +3047,7 @@ type Server struct {
 	cachedGen  uint64
 	cached     []byte
 	subs       map[chan uint64]struct{}
+	heartbeat  time.Duration // zero means heartbeatInterval
 }
 
 // New creates a server. It registers no handlers until Enable is called.
@@ -3076,59 +3077,49 @@ func (s *Server) Enable() {
 }
 
 // Disable stops serving and drops any subscribers. It is idempotent.
+//
+// Closing the subscriber channels is what ends a live event stream:
+// unregistering the handler does not, because pkg/http does not wait for
+// requests in flight. The one stream this cannot end promptly is one whose
+// client has stopped reading, leaving the handler blocked in a write; that
+// goroutine lives until its connection dies, and maxSubscribers is what
+// bounds the damage.
 func (s *Server) Disable() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.enabled {
+		s.mu.Unlock()
 		return
 	}
 
 	log.Infof("disabling introspection interface...")
 
-	s.mux.Unregister(SnapshotPath)
-	s.mux.Unregister(EventsPath)
 	s.enabled = false
 	s.cached, s.cachedGen = nil, 0
+	s.closeSubscribers()
 
-	for ch := range s.subs {
-		close(ch)
-		delete(s.subs, ch)
-	}
+	s.mu.Unlock()
+
+	s.mux.Unregister(SnapshotPath)
+	s.mux.Unregister(EventsPath)
 }
 
 // Invalidate marks the cached snapshot stale and wakes subscribers.
 //
 // This is called from NRI event handlers while they hold the resource
 // manager's write lock, so it must never block on anything that needs that
-// lock. It takes this server's mutex briefly and sends without blocking.
+// lock. It takes this server's mutex and delivers without blocking.
+//
+// The mutex is deliberately held across the delivery loop. Copying the
+// subscriber set and sending after unlocking would race Disable()'s close:
+// a channel closed in between would panic on send, and notify()'s default
+// arm does not save you, because a send on a closed channel is *ready*.
+// Delivery cannot block, so holding the mutex costs nothing.
 func (s *Server) Invalidate() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	s.generation++
-	gen := s.generation
-
-	subs := make([]chan uint64, 0, len(s.subs))
-	for ch := range s.subs {
-		subs = append(subs, ch)
-	}
-
-	s.mu.Unlock()
-
-	for _, ch := range subs {
-		notify(ch, gen)
-	}
-}
-
-// notify delivers a generation without ever blocking. The channel is
-// buffered for one value: if a notification is already pending the
-// subscriber has not read it yet, and since it refetches the current
-// snapshot anyway, an older pending value loses nothing.
-func notify(ch chan uint64, gen uint64) {
-	select {
-	case ch <- gen:
-	default:
-	}
+	s.notifySubscribers(s.generation)
 }
 
 // snapshot returns the marshalled snapshot for the current generation,
@@ -3459,7 +3450,7 @@ func TestServeEvents(t *testing.T) {
 	defer cancel()
 	req = req.WithContext(ctx)
 
-	w := httptest.NewRecorder()
+	w := newSyncRecorder()
 
 	served := make(chan struct{})
 	go func() {
@@ -3481,8 +3472,11 @@ func TestServeEvents(t *testing.T) {
 	s.Invalidate()
 	s.Invalidate()
 
-	// Give the handler a moment to write, then shut it down.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for a record to be written rather than sleeping. After cancel()
+	// both select arms are ready and Go picks between them at random, so
+	// cancelling on a timer loses the event about half the time — a flake,
+	// not a slow machine.
+	w.waitForWrite(t)
 	cancel()
 
 	select {
@@ -3495,9 +3489,20 @@ func TestServeEvents(t *testing.T) {
 		t.Errorf("content type %q, expected text/event-stream", ct)
 	}
 
-	body := w.Body.String()
+	body := w.body()
 	if !strings.Contains(body, "data: {\"generation\":") {
 		t.Errorf("no generation event in the stream:\n%s", body)
+	}
+
+	// Coalescing: two invalidations arriving before the subscriber reads
+	// must collapse into one record carrying the newer generation. Without
+	// this the test would pass just as well with a 64-deep buffer, and the
+	// design treats coalescing as a goal rather than an optimisation.
+	if n := strings.Count(body, "data: "); n != 1 {
+		t.Errorf("expected 1 coalesced record, got %d:\n%s", n, body)
+	}
+	if !strings.Contains(body, `data: {"generation":3}`) {
+		t.Errorf("record does not carry the latest generation:\n%s", body)
 	}
 
 	if s.subscribers() != 0 {
@@ -3505,11 +3510,134 @@ func TestServeEvents(t *testing.T) {
 	}
 }
 
-// TestDisableTerminatesLiveStream is what the wake-before-unregister ordering
-// in Disable() actually buys. Since pkg/http no longer holds a lock across a
-// handler, unregistering does not interrupt a stream and the server's write
-// lock does not either: closing the subscriber channels is the only thing
-// that ends it. So a live stream must be gone by the time Disable() returns.
+// syncRecorder is an http.ResponseWriter a test can read while the handler
+// is still writing. httptest.ResponseRecorder cannot be read safely until
+// the handler has returned, which is useless for a stream that only ends
+// when the test says so.
+type syncRecorder struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	hdr     http.Header
+	code    int
+	written chan struct{}
+}
+
+func newSyncRecorder() *syncRecorder {
+	return &syncRecorder{
+		hdr:     http.Header{},
+		written: make(chan struct{}, 1),
+	}
+}
+
+func (r *syncRecorder) Header() http.Header { return r.hdr }
+
+func (r *syncRecorder) WriteHeader(code int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.code = code
+}
+
+func (r *syncRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	n, err := r.buf.Write(p)
+	r.mu.Unlock()
+
+	select {
+	case r.written <- struct{}{}:
+	default:
+	}
+
+	return n, err
+}
+
+func (r *syncRecorder) Flush() {}
+
+func (r *syncRecorder) body() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.buf.String()
+}
+
+// waitForWrite blocks until the handler has written something.
+func (r *syncRecorder) waitForWrite(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-r.written:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler wrote nothing")
+	}
+}
+
+// TestEventsHeartbeat proves the idle-stream heartbeat, which is what keeps
+// kubectl port-forward and intervening proxies from reaping a connection.
+// The interval is shortened so the test does not wait half a minute.
+func TestEventsHeartbeat(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+	s.heartbeat = 10 * time.Millisecond
+	s.Enable()
+
+	req := httptest.NewRequest(http.MethodGet, "/introspect/events", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	w := newSyncRecorder()
+
+	served := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(w, req)
+		close(served)
+	}()
+
+	// No invalidation here, so the only thing that can be written is a
+	// heartbeat.
+	w.waitForWrite(t)
+	cancel()
+
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after the request was cancelled")
+	}
+
+	if body := w.body(); !strings.Contains(body, ": heartbeat\n\n") {
+		t.Errorf("no heartbeat comment in the stream:\n%q", body)
+	}
+}
+
+// TestSubscribeRejectedWhenDisabled covers the window pkg/http leaves open:
+// it dispatches with its lock released and Unregister does not wait for
+// requests in flight, so a request admitted just before Disable() reaches
+// its handler afterwards. It must not become a subscriber nobody will ever
+// close.
+func TestSubscribeRejectedWhenDisabled(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+
+	s.Enable()
+	s.Disable()
+
+	if _, ok := s.subscribe(); ok {
+		t.Error("subscribing succeeded while disabled")
+	}
+	if s.subscribers() != 0 {
+		t.Errorf("a disabled server has %d subscribers", s.subscribers())
+	}
+}
+
+// TestDisableTerminatesLiveStream pins that closing the subscriber channels
+// is what ends a stream: since pkg/http no longer holds a lock across a
+// handler, neither unregistering nor the server's write lock interrupts one.
+//
+// It does not pin the close-before-unregister *ordering* — Unregister never
+// waits for requests in flight, so reversing the two still closes the
+// channels before Disable() returns and this test still passes. It also
+// cannot cover a stream whose client has stopped reading, which leaves the
+// handler blocked in a write where a closed channel goes unobserved.
 func TestDisableTerminatesLiveStream(t *testing.T) {
 	mux := xhttp.NewServeMux()
 	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
@@ -3593,7 +3721,7 @@ func TestEventsRejectedAboveLimit(t *testing.T) {
 }
 ```
 
-Add `context` and `strings` to the test imports.
+Add `bytes`, `context`, `strings` and `sync` to the test imports.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -3622,14 +3750,32 @@ const (
 	maxSubscribers = 16
 	// heartbeatInterval is how often a comment is written to an idle
 	// stream. Without it, kubectl port-forward and intervening proxies
-	// eventually reap the connection.
+	// eventually reap the connection. Server.heartbeat overrides it, which
+	// is how a test reaches this path without waiting half a minute.
 	heartbeatInterval = 30 * time.Second
 )
 
-// subscribe registers an event subscriber, returning false if we are full.
+// The subscriber channels' whole lifetime lives in this file — created by
+// subscribe, delivered to by notifySubscribers, closed by closeSubscribers,
+// removed by unsubscribe — so that the one invariant binding them is
+// stateable in one place: every one of those operations runs under s.mu, so
+// a close can never race a send.
+
+// subscribe registers an event subscriber, returning false if we are full
+// or no longer enabled.
 func (s *Server) subscribe() (chan uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Checking enabled matters: pkg/http dispatches with its lock
+	// released and Unregister does not wait for requests in flight, so a
+	// request admitted just before Disable() reaches its handler body
+	// afterwards. Without this it would insert a channel into the map
+	// Disable() has already emptied, and nothing would ever close it —
+	// a goroutine and a cap slot leaked until the client disconnects.
+	if !s.enabled {
+		return nil, false
+	}
 
 	if len(s.subs) >= maxSubscribers {
 		return nil, false
@@ -3662,12 +3808,45 @@ func (s *Server) subscribers() int {
 	return len(s.subs)
 }
 
+// notifySubscribers delivers a generation to every subscriber without ever
+// blocking. Each channel is buffered for one value: if a notification is
+// already pending the subscriber has not read it yet, and since it refetches
+// the current snapshot anyway, an older pending value loses nothing.
+//
+// Callers must hold s.mu. That is what keeps a send from racing a close.
+func (s *Server) notifySubscribers(gen uint64) {
+	for ch := range s.subs {
+		select {
+		case ch <- gen:
+		default:
+		}
+	}
+}
+
+// closeSubscribers ends every event stream. Closing is the only thing that
+// does: unregistering the handler does not, because pkg/http does not wait
+// for requests in flight.
+//
+// Callers must hold s.mu.
+func (s *Server) closeSubscribers() {
+	for ch := range s.subs {
+		close(ch)
+		delete(s.subs, ch)
+	}
+}
+
 // serveEvents streams change notifications as Server-Sent Events.
 //
 // Each event carries only a generation number; the client refetches the
 // snapshot. That way the server marshals nothing until someone asks, and a
 // slow client cannot make a producer wait.
 func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -3676,7 +3855,7 @@ func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
 
 	ch, ok := s.subscribe()
 	if !ok {
-		http.Error(w, "too many subscribers", http.StatusServiceUnavailable)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	defer s.unsubscribe(ch)
@@ -3687,7 +3866,11 @@ func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	heartbeat := time.NewTicker(heartbeatInterval)
+	interval := s.heartbeat
+	if interval <= 0 {
+		interval = heartbeatInterval
+	}
+	heartbeat := time.NewTicker(interval)
 	defer heartbeat.Stop()
 
 	for {
@@ -3707,7 +3890,7 @@ func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
 			flusher.Flush()
 
 		case <-heartbeat.C:
-			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
+			if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
 				log.Debugf("failed to write heartbeat: %v", err)
 				return
 			}
