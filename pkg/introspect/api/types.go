@@ -30,14 +30,25 @@
 // nothing to say, which is not an error, and no policy-agnostic field is ever
 // derived from it.
 //
-// Absence means empty throughout this format, and a consumer must treat it so:
-// a missing section is an empty section, a missing array an empty array, a
-// missing map an empty map, a missing string "", and a missing number 0.
-// Nothing is ever omitted to mean "unknown". The exception is a pointer to a
-// scalar, of which this format has exactly two: NUMANode.Package and
-// NUMANode.Die are absent when the node belongs to no package or die at all,
-// which is not the same as belonging to package 0, and that is why they are
-// pointers rather than plain ints.
+// Absence means empty for every aggregate, and a consumer must treat it so: a
+// missing section is an empty section, a missing array an empty array, and a
+// missing map an empty map.
+//
+// An absent scalar usually means its zero value — a missing string is "", a
+// missing number 0 — but not always. In the four cases below absence means
+// "not known", and a consumer must not render the zero value for them:
+//   - NUMANode.Package and NUMANode.Die are absent when the node belongs to no
+//     package or die at all, which is not the same as belonging to package 0.
+//     That is why they are pointers rather than plain ints.
+//   - CPU.CoreKind is absent when the machine reports no core kinds at all. It
+//     means the kind is unknown; it does not mean P-core, which is what the
+//     zero value of the kind the collector reads would claim.
+//   - CPU.BaseFreq, MinFreq and MaxFreq are absent when the kernel does not
+//     report them, as on a machine with no cpufreq at all. They mean "not
+//     reported", not 0 kHz.
+//   - Config.Data is absent when the effective configuration could not be
+//     serialized, with the rest of Config still emitted. It means the
+//     configuration exists but could not be rendered, not that it is empty.
 //
 // A boolean is always emitted where false is the notable state — CPU.Online,
 // NUMANode.NormalMemory — so that a reader never has to tell an offline CPU or
