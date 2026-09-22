@@ -1851,17 +1851,40 @@ func TestDerive(t *testing.T) {
 			memCommitment: map[int]int64{0: 0, 1: 0},
 		},
 		{
-			name: "exclusive container fully commits its CPUs",
+			// Memory spans two nodes here, not one: with a single node
+			// the memory division is indistinguishable from no
+			// division at all, and half this function's arithmetic
+			// would go untested.
+			name: "exclusive container fully commits its CPUs and nodes",
 			containers: []*api.Container{
 				{
 					CPURequest:    2000,
 					MemoryRequest: 1000,
-					Applied:       &api.Applied{CpusetCpus: "0-1", CpusetMems: "0"},
+					Applied: &api.Applied{
+						CpusetCpus: "0-1",
+						CpusetMems: "0-1",
+					},
 				},
 			},
 			cpuCommitment: map[int]int64{0: 1000, 1: 1000, 2: 0, 3: 0},
 			cpuSharers:    map[int]int{0: 1, 1: 1, 2: 0, 3: 0},
-			memCommitment: map[int]int64{0: 1000, 1: 0},
+			memCommitment: map[int]int64{0: 500, 1: 500},
+		},
+		{
+			// Partly out of range: the container really is spread over
+			// two nodes, so each share is halved, but only the node
+			// this machine has records anything. This pins the memory
+			// branch's existence guard and its division at once.
+			name: "memory node outside the machine is skipped, not redistributed",
+			containers: []*api.Container{
+				{
+					MemoryRequest: 1000,
+					Applied:       &api.Applied{CpusetMems: "1,99"},
+				},
+			},
+			cpuCommitment: map[int]int64{0: 0, 1: 0, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 0, 1: 0, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 0, 1: 500},
 		},
 		{
 			name: "shared request spreads and sharers accumulate",
@@ -1955,6 +1978,26 @@ func TestDerive(t *testing.T) {
 		})
 	}
 }
+
+// TestDeriveWithoutHardware checks that the maps are non-nil even with
+// nothing to key them off, so a consumer never needs a nil-map check.
+func TestDeriveWithoutHardware(t *testing.T) {
+	d := derive(nil, []*api.Container{
+		{CPURequest: 1000, Applied: &api.Applied{CpusetCpus: "0"}},
+	})
+
+	if d == nil {
+		t.Fatal("derive returned nil")
+	}
+	if d.CPUCommitment == nil || d.CPUSharers == nil ||
+		d.MemoryCommitment == nil {
+		t.Errorf("nil map in %+v", d)
+	}
+	if len(d.CPUCommitment) != 0 || len(d.CPUSharers) != 0 ||
+		len(d.MemoryCommitment) != 0 {
+		t.Errorf("expected empty maps without hardware, got %+v", d)
+	}
+}
 ```
 
 Add `reflect` to the test file's imports.
@@ -1978,9 +2021,16 @@ Append to `pkg/resmgr/introspect/collect.go`:
 // reported as it is rather than clamped, because oversubscription is
 // precisely what a viewer wants to see.
 //
-// A cpuset that does not parse, is empty, or names CPUs the machine does not
-// have contributes nothing. An unparseable cpuset means something upstream
-// is already broken and is logged, not guessed at.
+// Shares truncate, so a per-CPU or per-node sum can fall a few units short
+// of the request it came from. A consumer reconciling the two should expect
+// that rather than treat it as a discrepancy.
+//
+// A set that does not parse, or is empty, contributes nothing. A set naming
+// IDs the machine does not have still divides by its full size, and only the
+// IDs the machine does have record anything: a container allowed on CPUs
+// "0,99" really is spread over two CPUs, so CPU 0 receives half its request
+// and the other half is simply not on this machine. An unparseable set means
+// something upstream is already broken and is logged, not guessed at.
 func derive(hw *api.Hardware, containers []*api.Container) *api.Derived {
 	d := &api.Derived{
 		CPUCommitment:    map[int]int64{},
@@ -2006,28 +2056,26 @@ func derive(hw *api.Hardware, containers []*api.Container) *api.Derived {
 			continue
 		}
 
-		if cpus := parseSet(c.Applied.CpusetCpus, "cpuset.cpus", c.ID); cpus != nil {
-			if n := int64(len(cpus)); n > 0 {
-				share := c.CPURequest / n
-				for _, id := range cpus {
-					if _, ok := d.CPUCommitment[id]; !ok {
-						continue
-					}
-					d.CPUCommitment[id] += share
-					d.CPUSharers[id]++
+		// parseSet returns nil on failure, so a length check covers
+		// both the nil and the empty case.
+		if cpus := parseSet(c.Applied.CpusetCpus, "cpuset.cpus", c.ID); len(cpus) > 0 {
+			share := c.CPURequest / int64(len(cpus))
+			for _, id := range cpus {
+				if _, ok := d.CPUCommitment[id]; !ok {
+					continue
 				}
+				d.CPUCommitment[id] += share
+				d.CPUSharers[id]++
 			}
 		}
 
-		if mems := parseSet(c.Applied.CpusetMems, "cpuset.mems", c.ID); mems != nil {
-			if n := int64(len(mems)); n > 0 {
-				share := c.MemoryRequest / n
-				for _, id := range mems {
-					if _, ok := d.MemoryCommitment[id]; !ok {
-						continue
-					}
-					d.MemoryCommitment[id] += share
+		if mems := parseSet(c.Applied.CpusetMems, "cpuset.mems", c.ID); len(mems) > 0 {
+			share := c.MemoryRequest / int64(len(mems))
+			for _, id := range mems {
+				if _, ok := d.MemoryCommitment[id]; !ok {
+					continue
 				}
+				d.MemoryCommitment[id] += share
 			}
 		}
 	}
@@ -2043,7 +2091,11 @@ func parseSet(value, what, id string) []int {
 
 	set, err := cpuset.Parse(value)
 	if err != nil {
-		log.Warnf("container %s has unparseable %s %q: %v", id, what, value, err)
+		// Debug rather than warn: a snapshot is collected per HTTP
+		// request, and an unparseable set is a persistent condition,
+		// so warning here would let a remote caller drive an unbounded
+		// log stream.
+		log.Debugf("container %s has unparseable %s %q: %v", id, what, value, err)
 		return nil
 	}
 
