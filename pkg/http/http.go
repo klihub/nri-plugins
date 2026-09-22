@@ -82,6 +82,11 @@ func (mux *ServeMux) HandleFunc(pattern string, fn func(http.ResponseWriter, *ht
 }
 
 // Unregister unregister any handlers for the given pattern.
+//
+// It does not wait for the requests in flight: a handler already dispatched
+// keeps running, and serving from the mux it started with, after this
+// returns. A caller that tears down state its handler uses must synchronize
+// with the handler itself.
 func (mux *ServeMux) Unregister(pattern string) (http.Handler, bool) {
 	mux.Lock()
 	defer mux.Unlock()
@@ -240,11 +245,18 @@ func (s *Server) Restart(addr string) error {
 	return s.Start(addr)
 }
 
-// ServeHTTP servers the given HTTP request.
+// ServeHTTP serves the given HTTP request.
+//
+// The handler runs with our lock released, so that a long-lived handler —
+// an event stream, say — cannot block Stop, Start or Restart for the
+// lifetime of its connection. The mux is set once at construction and never
+// replaced, so the dispatch target is stable.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.RLock()
-	defer s.RUnlock()
-	s.mux.ServeHTTP(w, r)
+	mux := s.mux
+	s.RUnlock()
+
+	mux.ServeHTTP(w, r)
 }
 
 // httpError returns a formatted instrumentation/http-specific error.

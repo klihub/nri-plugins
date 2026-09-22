@@ -149,3 +149,49 @@ func TestUnregisterWithRequestInFlight(t *testing.T) {
 		t.Fatal("Unregister() blocked on a request in flight")
 	}
 }
+
+func TestStopWithRequestInFlight(t *testing.T) {
+	// A handler must not hold up Stop() for as long as it runs. The
+	// instrumentation server is restarted on every configuration update,
+	// and that update holds locks a handler may need, so a long-lived
+	// handler would otherwise wedge the update for its whole lifetime.
+	srv := NewServer()
+	mux := srv.GetMux()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	mux.HandleFunc("/blocking", func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+	})
+
+	if err := srv.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("failed to start HTTP server: %v", err)
+	}
+
+	url := "http://" + srv.GetAddress() + "/blocking"
+
+	go func() {
+		res, err := http.Get(url)
+		if err == nil {
+			res.Body.Close() // nolint:errcheck
+		}
+	}()
+
+	<-entered // the handler is running and will not return yet
+
+	done := make(chan struct{})
+	go func() {
+		srv.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		close(release)
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("Stop() blocked on a request in flight")
+	}
+}
