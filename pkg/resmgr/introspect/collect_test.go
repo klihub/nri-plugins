@@ -15,12 +15,18 @@
 package introspect
 
 import (
+	"encoding/json"
 	"os"
 	"path"
+	"strings"
 	"testing"
+
+	nri "github.com/containerd/nri/pkg/api"
+	v1 "k8s.io/api/core/v1"
 
 	"github.com/containers/nri-plugins/pkg/introspect/api"
 	"github.com/containers/nri-plugins/pkg/sysfs"
+	"github.com/containers/nri-plugins/pkg/topology"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 )
 
@@ -259,5 +265,105 @@ func TestCollectHardwareCoreKinds(t *testing.T) {
 			t.Errorf("CPU %d: core kind %q, expected %q",
 				c.ID, c.CoreKind, tagged[c.ID])
 		}
+	}
+}
+
+func TestCollectWorkloads(t *testing.T) {
+	c := &fakeCache{
+		pods: []Pod{
+			&fakePod{
+				id: "pod0", uid: "uid0", name: "web", namespace: "default",
+				qos: v1.PodQOSGuaranteed,
+			},
+		},
+		containers: []Container{
+			&fakeContainer{
+				id: "ctr0", podID: "pod0", name: "nginx",
+				state:        nri.ContainerState_CONTAINER_RUNNING,
+				qos:          v1.PodQOSGuaranteed,
+				requirements: requirements("4", "4", "2Gi", "2Gi"),
+				cpusetCpus:   "0-3",
+				cpusetMems:   "0",
+				cpuShares:    4096,
+				cpuQuota:     400000,
+				cpuPeriod:    100000,
+				memoryLimit:  2147483648,
+				rdtClass:     "guaranteed",
+				blockIOClass: "",
+				hints: topology.Hints{
+					"eth0": topology.Hint{
+						Provider: "/sys/class/net/eth0",
+						CPUs:     "0-3",
+						NUMAs:    "0",
+					},
+				},
+			},
+		},
+	}
+
+	pods, containers := collectWorkloads(c)
+
+	if len(pods) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(pods))
+	}
+	if pods[0].ID != "pod0" || pods[0].UID != "uid0" ||
+		pods[0].Name != "web" || pods[0].Namespace != "default" ||
+		pods[0].QOSClass != "Guaranteed" {
+		t.Errorf("unexpected pod: %+v", pods[0])
+	}
+
+	if len(containers) != 1 {
+		t.Fatalf("expected 1 container, got %d", len(containers))
+	}
+
+	got := containers[0]
+	if got.ID != "ctr0" || got.PodID != "pod0" || got.Name != "nginx" {
+		t.Errorf("unexpected container identity: %+v", got)
+	}
+	if got.State != "running" {
+		t.Errorf("state %q, expected \"running\"", got.State)
+	}
+	if got.CPURequest != 4000 || got.CPULimit != 4000 {
+		t.Errorf("CPU request/limit %d/%d, expected 4000/4000",
+			got.CPURequest, got.CPULimit)
+	}
+	if got.MemoryRequest != 2147483648 || got.MemoryLimit != 2147483648 {
+		t.Errorf("memory request/limit %d/%d, expected 2147483648 twice",
+			got.MemoryRequest, got.MemoryLimit)
+	}
+	if got.Applied == nil {
+		t.Fatal("applied resources missing")
+	}
+	if got.Applied.CpusetCpus != "0-3" || got.Applied.CpusetMems != "0" {
+		t.Errorf("unexpected applied cpuset: %+v", got.Applied)
+	}
+	if got.Applied.CPUShares != 4096 || got.Applied.CPUQuota != 400000 ||
+		got.Applied.CPUPeriod != 100000 ||
+		got.Applied.MemoryLimit != 2147483648 {
+		t.Errorf("unexpected applied cgroup parameters: %+v", got.Applied)
+	}
+	if got.Classes["rdt"] != "guaranteed" {
+		t.Errorf("rdt class %q, expected \"guaranteed\"", got.Classes["rdt"])
+	}
+	if _, ok := got.Classes["blockio"]; ok {
+		t.Error("empty blockio class should be omitted")
+	}
+	if len(got.Hints) != 1 || got.Hints[0].Provider != "/sys/class/net/eth0" {
+		t.Errorf("unexpected hints: %+v", got.Hints)
+	}
+}
+
+func TestCollectWorkloadsNoArgs(t *testing.T) {
+	// The removed introspection API exposed container command lines.
+	// Make sure no field of that shape came back.
+	if _, ok := any(&api.Container{}).(interface{ GetArgs() []string }); ok {
+		t.Error("api.Container must not expose command line arguments")
+	}
+	data, err := json.Marshal(&api.Container{})
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+	if strings.Contains(string(data), "args") {
+		t.Errorf("container JSON mentions args: %s", data)
 	}
 }

@@ -16,9 +16,16 @@ package introspect
 
 import (
 	"slices"
+	"sort"
+	"strings"
+
+	nri "github.com/containerd/nri/pkg/api"
+	v1 "k8s.io/api/core/v1"
 
 	"github.com/containers/nri-plugins/pkg/introspect/api"
 	logger "github.com/containers/nri-plugins/pkg/log"
+	"github.com/containers/nri-plugins/pkg/resmgr/cache"
+	"github.com/containers/nri-plugins/pkg/topology"
 
 	system "github.com/containers/nri-plugins/pkg/sysfs"
 )
@@ -135,4 +142,137 @@ func collectHardware(sys system.System) *api.Hardware {
 	}
 
 	return hw
+}
+
+// Cache is the part of the resource manager cache the collector needs.
+// The interfaces here are narrow on purpose: cache.Cache, cache.Pod and
+// cache.Container satisfy them structurally, and a test fake is a dozen
+// methods rather than a hundred.
+type Cache interface {
+	GetPods() []Pod
+	GetContainers() []Container
+}
+
+// Pod is the part of a cached pod the collector needs.
+type Pod interface {
+	GetID() string
+	GetUID() string
+	GetName() string
+	GetNamespace() string
+	GetQOSClass() v1.PodQOSClass
+}
+
+// Container is the part of a cached container the collector needs.
+type Container interface {
+	GetID() string
+	GetPodID() string
+	GetName() string
+	GetState() nri.ContainerState
+	GetQOSClass() v1.PodQOSClass
+	GetResourceRequirements() v1.ResourceRequirements
+	GetCpusetCpus() string
+	GetCpusetMems() string
+	GetCPUShares() int64
+	GetCPUQuota() int64
+	GetCPUPeriod() int64
+	GetMemoryLimit() int64
+	GetRDTClass() string
+	GetBlockIOClass() string
+	GetTopologyHints() topology.Hints
+}
+
+// Make sure the real cache types keep satisfying our interfaces.
+var (
+	_ Pod       = cache.Pod(nil)
+	_ Container = cache.Container(nil)
+)
+
+// collectWorkloads describes the pods and containers on this node, as the
+// cache knows them. Command line arguments are deliberately not exposed.
+func collectWorkloads(c Cache) ([]*api.Pod, []*api.Container) {
+	if c == nil {
+		return nil, nil
+	}
+
+	var (
+		pods       []*api.Pod
+		containers []*api.Container
+	)
+
+	for _, p := range c.GetPods() {
+		pods = append(pods, &api.Pod{
+			ID:        p.GetID(),
+			UID:       p.GetUID(),
+			Name:      p.GetName(),
+			Namespace: p.GetNamespace(),
+			QOSClass:  string(p.GetQOSClass()),
+		})
+	}
+
+	for _, ctr := range c.GetContainers() {
+		container := &api.Container{
+			ID:       ctr.GetID(),
+			PodID:    ctr.GetPodID(),
+			Name:     ctr.GetName(),
+			State:    containerState(ctr.GetState()),
+			QOSClass: string(ctr.GetQOSClass()),
+			Applied: &api.Applied{
+				CpusetCpus:  ctr.GetCpusetCpus(),
+				CpusetMems:  ctr.GetCpusetMems(),
+				CPUShares:   ctr.GetCPUShares(),
+				CPUQuota:    ctr.GetCPUQuota(),
+				CPUPeriod:   ctr.GetCPUPeriod(),
+				MemoryLimit: ctr.GetMemoryLimit(),
+			},
+		}
+
+		resources := ctr.GetResourceRequirements()
+		if q, ok := resources.Requests[v1.ResourceCPU]; ok {
+			container.CPURequest = q.MilliValue()
+		}
+		if q, ok := resources.Limits[v1.ResourceCPU]; ok {
+			container.CPULimit = q.MilliValue()
+		}
+		if q, ok := resources.Requests[v1.ResourceMemory]; ok {
+			container.MemoryRequest = q.Value()
+		}
+		if q, ok := resources.Limits[v1.ResourceMemory]; ok {
+			container.MemoryLimit = q.Value()
+		}
+
+		for name, value := range map[string]string{
+			"rdt":     ctr.GetRDTClass(),
+			"blockio": ctr.GetBlockIOClass(),
+		} {
+			if value == "" {
+				continue
+			}
+			if container.Classes == nil {
+				container.Classes = map[string]string{}
+			}
+			container.Classes[name] = value
+		}
+
+		for _, h := range ctr.GetTopologyHints() {
+			container.Hints = append(container.Hints, &api.Hint{
+				Provider: h.Provider,
+				CPUs:     h.CPUs,
+				NUMAs:    h.NUMAs,
+				Sockets:  h.Sockets,
+				IRQs:     h.IRQs,
+			})
+		}
+		sort.Slice(container.Hints, func(i, j int) bool {
+			return container.Hints[i].Provider < container.Hints[j].Provider
+		})
+
+		containers = append(containers, container)
+	}
+
+	return pods, containers
+}
+
+// containerState turns an NRI container state into a short lower-case name.
+func containerState(state nri.ContainerState) string {
+	return strings.ToLower(strings.TrimPrefix(state.String(), "CONTAINER_"))
 }
