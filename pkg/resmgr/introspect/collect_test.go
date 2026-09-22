@@ -497,17 +497,40 @@ func TestDerive(t *testing.T) {
 			memCommitment: map[int]int64{0: 0, 1: 0},
 		},
 		{
-			name: "exclusive container fully commits its CPUs",
+			// Memory spans two nodes here, not one: with a single node
+			// the memory division is indistinguishable from no
+			// division at all, and half this function's arithmetic
+			// would go untested.
+			name: "exclusive container fully commits its CPUs and nodes",
 			containers: []*api.Container{
 				{
 					CPURequest:    2000,
 					MemoryRequest: 1000,
-					Applied:       &api.Applied{CpusetCpus: "0-1", CpusetMems: "0"},
+					Applied: &api.Applied{
+						CpusetCpus: "0-1",
+						CpusetMems: "0-1",
+					},
 				},
 			},
 			cpuCommitment: map[int]int64{0: 1000, 1: 1000, 2: 0, 3: 0},
 			cpuSharers:    map[int]int{0: 1, 1: 1, 2: 0, 3: 0},
-			memCommitment: map[int]int64{0: 1000, 1: 0},
+			memCommitment: map[int]int64{0: 500, 1: 500},
+		},
+		{
+			// Partly out of range: the container really is spread over
+			// two nodes, so each share is halved, but only the node
+			// this machine has records anything. This pins the memory
+			// branch's existence guard and its division at once.
+			name: "memory node outside the machine is skipped, not redistributed",
+			containers: []*api.Container{
+				{
+					MemoryRequest: 1000,
+					Applied:       &api.Applied{CpusetMems: "1,99"},
+				},
+			},
+			cpuCommitment: map[int]int64{0: 0, 1: 0, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 0, 1: 0, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 0, 1: 500},
 		},
 		{
 			name: "shared request spreads and sharers accumulate",
@@ -599,5 +622,25 @@ func TestDerive(t *testing.T) {
 					d.MemoryCommitment, tc.memCommitment)
 			}
 		})
+	}
+}
+
+// TestDeriveWithoutHardware checks that the maps are non-nil even with
+// nothing to key them off, so a consumer never needs a nil-map check.
+func TestDeriveWithoutHardware(t *testing.T) {
+	d := derive(nil, []*api.Container{
+		{CPURequest: 1000, Applied: &api.Applied{CpusetCpus: "0"}},
+	})
+
+	if d == nil {
+		t.Fatal("derive returned nil")
+	}
+	if d.CPUCommitment == nil || d.CPUSharers == nil ||
+		d.MemoryCommitment == nil {
+		t.Errorf("nil map in %+v", d)
+	}
+	if len(d.CPUCommitment) != 0 || len(d.CPUSharers) != 0 ||
+		len(d.MemoryCommitment) != 0 {
+		t.Errorf("expected empty maps without hardware, got %+v", d)
 	}
 }
