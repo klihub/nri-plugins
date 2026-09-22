@@ -15,9 +15,11 @@
 package introspect
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -284,4 +286,147 @@ func TestInvalidateDoesNotBlockOnCollect(t *testing.T) {
 	}
 
 	close(release)
+}
+
+func TestServeEvents(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+	s.Enable()
+
+	req := httptest.NewRequest(http.MethodGet, "/introspect/events", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+
+	served := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(w, req)
+		close(served)
+	}()
+
+	// Wait until the subscriber is registered, then invalidate twice.
+	for i := 0; i < 100; i++ {
+		if s.subscribers() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.subscribers() != 1 {
+		t.Fatalf("expected 1 subscriber, got %d", s.subscribers())
+	}
+
+	s.Invalidate()
+	s.Invalidate()
+
+	// Give the handler a moment to write, then shut it down.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after the request was cancelled")
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("content type %q, expected text/event-stream", ct)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "data: {\"generation\":") {
+		t.Errorf("no generation event in the stream:\n%s", body)
+	}
+
+	if s.subscribers() != 0 {
+		t.Errorf("subscriber not cleaned up: %d remain", s.subscribers())
+	}
+}
+
+// TestDisableTerminatesLiveStream is what the wake-before-unregister ordering
+// in Disable() actually buys. Since pkg/http no longer holds a lock across a
+// handler, unregistering does not interrupt a stream and the server's write
+// lock does not either: closing the subscriber channels is the only thing
+// that ends it. So a live stream must be gone by the time Disable() returns.
+func TestDisableTerminatesLiveStream(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+	s.Enable()
+
+	served := make(chan struct{})
+	go func() {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/introspect/events", nil))
+		close(served)
+	}()
+
+	for i := 0; i < 200; i++ {
+		if s.subscribers() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s.subscribers() != 1 {
+		t.Fatalf("expected 1 subscriber, got %d", s.subscribers())
+	}
+
+	s.Disable()
+
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream outlived Disable()")
+	}
+
+	if s.subscribers() != 0 {
+		t.Errorf("subscriber not cleaned up: %d remain", s.subscribers())
+	}
+}
+
+func TestEventSubscriberLimit(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+	s.Enable()
+
+	// Fill the subscriber table directly; the HTTP path is covered above.
+	var channels []chan uint64
+	for i := 0; i < maxSubscribers; i++ {
+		ch, ok := s.subscribe()
+		if !ok {
+			t.Fatalf("subscriber %d rejected below the limit", i)
+		}
+		channels = append(channels, ch)
+	}
+
+	if _, ok := s.subscribe(); ok {
+		t.Errorf("subscriber %d accepted above the limit of %d",
+			maxSubscribers+1, maxSubscribers)
+	}
+
+	s.unsubscribe(channels[0])
+
+	if _, ok := s.subscribe(); !ok {
+		t.Error("subscribing failed after a slot was freed")
+	}
+}
+
+func TestEventsRejectedAboveLimit(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+	s.Enable()
+
+	for i := 0; i < maxSubscribers; i++ {
+		if _, ok := s.subscribe(); !ok {
+			t.Fatalf("subscriber %d rejected below the limit", i)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/introspect/events", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status %d, expected %d when full",
+			w.Code, http.StatusServiceUnavailable)
+	}
 }

@@ -86,6 +86,7 @@ func (s *Server) Enable() {
 	log.Infof("enabling introspection interface...")
 
 	s.mux.HandleFunc(SnapshotPath, s.serveSnapshot)
+	s.mux.HandleFunc(EventsPath, s.serveEvents)
 }
 
 // Disable stops serving and drops any subscribers. It is idempotent.
@@ -112,6 +113,7 @@ func (s *Server) Disable() {
 	s.mu.Unlock()
 
 	s.mux.Unregister(SnapshotPath)
+	s.mux.Unregister(EventsPath)
 }
 
 // Invalidate marks the cached snapshot stale and wakes subscribers.
