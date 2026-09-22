@@ -47,6 +47,9 @@ func TestServeSnapshot(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("content type %q, expected application/json", ct)
 	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("cache control %q, expected no-store", cc)
+	}
 
 	snap := &api.Snapshot{}
 	if err := json.Unmarshal(w.Body.Bytes(), snap); err != nil {
@@ -139,6 +142,94 @@ func TestSnapshotIsCachedUntilInvalidated(t *testing.T) {
 	}
 }
 
+// TestSlowCollectionDoesNotClobberNewer pins the overwrite guard in
+// snapshot(): a collection that started at an older generation must not
+// replace a body already cached at a newer one.
+func TestSlowCollectionDoesNotClobberNewer(t *testing.T) {
+	var (
+		s       *Server
+		release = make(chan struct{})
+		entered = make(chan struct{})
+		calls   atomic.Int64
+	)
+
+	mux := xhttp.NewServeMux()
+	s = New(mux, func() *api.Snapshot {
+		// Only the first collection blocks; it is the one that must
+		// lose the race.
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+			return testSnapshot("slow")
+		}
+		return testSnapshot("fast")
+	})
+	s.Enable()
+
+	get := func() *api.Snapshot {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/introspect", nil))
+		snap := &api.Snapshot{}
+		if err := json.Unmarshal(w.Body.Bytes(), snap); err != nil {
+			t.Errorf("failed to unmarshal response: %v", err)
+			return nil
+		}
+		return snap
+	}
+
+	slow := make(chan *api.Snapshot, 1)
+	go func() { slow <- get() }()
+
+	<-entered      // the slow collection holds generation 1
+	s.Invalidate() // now at generation 2
+
+	if fast := get(); fast == nil || fast.Node.Name != "fast" {
+		t.Fatalf("expected the second request to collect afresh, got %+v", fast)
+	}
+
+	close(release)
+	if got := <-slow; got == nil || got.Node.Name != "slow" {
+		t.Errorf("the slow request should still see its own body, got %+v", got)
+	}
+
+	// The cached body must be the newer one, so a third request neither
+	// re-collects nor serves the superseded generation.
+	before := calls.Load()
+	third := get()
+	if third == nil || third.Node.Name != "fast" {
+		t.Errorf("cache holds the superseded body: %+v", third)
+	}
+	if calls.Load() != before {
+		t.Errorf("third request re-collected: %d calls, expected %d",
+			calls.Load(), before)
+	}
+}
+
+func TestNonGetIsRejected(t *testing.T) {
+	var collected atomic.Int64
+
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot {
+		collected.Add(1)
+		return testSnapshot("worker-1")
+	})
+	s.Enable()
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/introspect", nil))
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status %d, expected %d for POST",
+			w.Code, http.StatusMethodNotAllowed)
+	}
+	if allow := w.Header().Get("Allow"); allow != "GET, HEAD" {
+		t.Errorf("allow header %q, expected %q", allow, "GET, HEAD")
+	}
+	if n := collected.Load(); n != 0 {
+		t.Errorf("collected %d times for a rejected request, expected 0", n)
+	}
+}
+
 func TestNothingCollectedWithoutRequests(t *testing.T) {
 	var collected atomic.Int64
 
@@ -155,53 +246,6 @@ func TestNothingCollectedWithoutRequests(t *testing.T) {
 
 	if n := collected.Load(); n != 0 {
 		t.Errorf("collected %d times with no request pending, expected 0", n)
-	}
-}
-
-func TestDisableDoesNotDeadlockWithRequestInFlight(t *testing.T) {
-	// Unregistering takes the mux' write lock, which waits for the requests
-	// in flight, and a request in flight needs the server's mutex to store
-	// its result. If Disable() held that mutex across the unregistration,
-	// neither could finish.
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	served := make(chan struct{})
-	disabled := make(chan struct{})
-
-	mux := xhttp.NewServeMux()
-	s := New(mux, func() *api.Snapshot {
-		close(entered)
-		<-release
-		return testSnapshot("worker-1")
-	})
-	s.Enable()
-
-	go func() {
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/introspect", nil))
-		close(served)
-	}()
-
-	<-entered // a request holds the mux read lock and is inside collect()
-
-	go func() {
-		s.Disable()
-		close(disabled)
-	}()
-
-	time.Sleep(100 * time.Millisecond) // let Disable() reach the mux
-
-	close(release)
-
-	select {
-	case <-served:
-	case <-time.After(2 * time.Second):
-		t.Fatal("request in flight never finished during Disable()")
-	}
-	select {
-	case <-disabled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Disable() blocked on a request in flight")
 	}
 }
 

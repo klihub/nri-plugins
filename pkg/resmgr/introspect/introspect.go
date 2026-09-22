@@ -36,8 +36,9 @@ const (
 type Snapshot = api.Snapshot
 
 // CollectFn returns a fresh snapshot. It must be safe to call from an HTTP
-// handler goroutine; the resource manager's implementation takes its read
-// lock.
+// handler goroutine — the resource manager's implementation takes its read
+// lock — and it must return a snapshot the server may mutate and retain, not
+// a shared or pooled one: the server stamps the generation into it.
 type CollectFn func() *Snapshot
 
 // Server serves the introspection interface.
@@ -153,6 +154,17 @@ func notify(ch chan uint64, gen uint64) {
 // collect() is deliberately called with the mutex released: it takes the
 // resource manager's read lock, and Invalidate() runs while that lock is
 // held for writing. Holding this mutex across collect() would deadlock.
+//
+// The generation is sampled before collecting, so a body may reflect state
+// newer than its stamp claims — never older. That direction is the safe one:
+// a client told generation N never concludes it is current when it is not.
+// The cost is that a collection racing an invalidation is cached under an
+// already-superseded generation and will never be hit, so on a node changing
+// constantly the cache simply stops helping.
+//
+// The returned slice is shared by every concurrent request. It is only ever
+// replaced, never appended to or written through, which is what makes that
+// safe — do not "optimise" it into a reused buffer.
 func (s *Server) snapshot() ([]byte, error) {
 	s.mu.Lock()
 	gen := s.generation
@@ -176,9 +188,11 @@ func (s *Server) snapshot() ([]byte, error) {
 	}
 
 	s.mu.Lock()
-	// Another request may have finished a newer collection meanwhile;
-	// keep whichever is newer.
-	if s.cached == nil || s.cachedGen <= gen {
+	// Another request may have finished a newer collection meanwhile; keep
+	// that one. A completing collection always stores under its own
+	// generation, never a newer one, so this cannot cache a stale body
+	// under a newer stamp.
+	if s.cachedGen < gen {
 		s.cached, s.cachedGen = data, gen
 	}
 	s.mu.Unlock()
@@ -188,6 +202,12 @@ func (s *Server) snapshot() ([]byte, error) {
 
 // serveSnapshot serves the node state snapshot.
 func (s *Server) serveSnapshot(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	data, err := s.snapshot()
 	if err != nil {
 		log.Errorf("failed to produce snapshot: %v", err)

@@ -196,7 +196,6 @@ func (m *resmgr) start(cfg cfgapi.ResmgrConfig) error {
 	if err := instrumentation.Reconfigure(&mCfg.Instrumentation); err != nil {
 		return err
 	}
-	m.configureIntrospection(&mCfg.Instrumentation)
 
 	if err := m.blkio.configure(&mCfg.Control.BlockIO); err != nil {
 		return err
@@ -229,6 +228,16 @@ func (m *resmgr) start(cfg cfgapi.ResmgrConfig) error {
 	if err := m.startEventProcessing(); err != nil {
 		return err
 	}
+
+	// Introspection is configured last on this path, unlike in reconfigure()
+	// where it sits next to instrumentation. start() does not hold our lock,
+	// so registering the handler any earlier would publish a live endpoint
+	// over half-initialised state: a request could be answered from before
+	// the policy started and before NRI synchronization, and its m.RLock()
+	// would exclude nothing, because nothing here takes m.Lock(). The cache
+	// ranges over unguarded maps, so that read racing a write is a runtime
+	// throw, not a stale answer. Keep this call after everything else.
+	m.configureIntrospection(&mCfg.Instrumentation)
 
 	if err := pidfile.Remove(); err != nil {
 		return resmgrError("failed to remove stale/old PID file: %v", err)
