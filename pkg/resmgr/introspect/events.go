@@ -59,7 +59,7 @@ func (s *Server) subscribe() (chan uint64, bool) {
 		return nil, false
 	}
 
-	// Buffered for one value: notify() never blocks, and a subscriber
+	// Buffered for one value: delivery never blocks, and a subscriber
 	// refetches the current snapshot anyway, so a coalesced older
 	// generation loses nothing.
 	ch := make(chan uint64, 1)
@@ -149,7 +149,12 @@ func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// Read under the mutex like every other field of Server, even though
+	// only a test ever writes it.
+	s.mu.Lock()
 	interval := s.heartbeat
+	s.mu.Unlock()
+
 	if interval <= 0 {
 		interval = heartbeatInterval
 	}

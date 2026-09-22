@@ -335,8 +335,12 @@ func TestServeEvents(t *testing.T) {
 		t.Fatal("handler did not return after the request was cancelled")
 	}
 
-	if ct := w.Header().Get("Content-Type"); ct != "text/event-stream" {
+	if ct := w.headerGet("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content type %q, expected text/event-stream", ct)
+	}
+
+	if code := w.status(); code != http.StatusOK {
+		t.Errorf("status %d, expected %d", code, http.StatusOK)
 	}
 
 	body := w.body()
@@ -356,6 +360,10 @@ func TestServeEvents(t *testing.T) {
 // is still writing. httptest.ResponseRecorder cannot be read safely until
 // the handler has returned, which is useless for a stream that only ends
 // when the test says so.
+//
+// Header() returns the live map with no mutex and must not be read while
+// the handler is running. Tests must use headerGet() instead.
+// Safe readers are headerGet(), status(), and body().
 type syncRecorder struct {
 	mu      sync.Mutex
 	buf     bytes.Buffer
@@ -400,6 +408,22 @@ func (r *syncRecorder) body() string {
 	defer r.mu.Unlock()
 
 	return r.buf.String()
+}
+
+// headerGet returns the value of a header field, safely.
+func (r *syncRecorder) headerGet(key string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.hdr.Get(key)
+}
+
+// status returns the response code, safely.
+func (r *syncRecorder) status() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.code
 }
 
 // waitForWrite blocks until the handler has written something.

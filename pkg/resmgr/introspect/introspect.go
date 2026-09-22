@@ -123,7 +123,13 @@ func (s *Server) Disable() {
 //
 // This is called from NRI event handlers while they hold the resource
 // manager's write lock, so it must never block on anything that needs that
-// lock. It takes this server's mutex briefly and sends without blocking.
+// lock. It takes this server's mutex and delivers without blocking.
+//
+// The mutex is deliberately held across the delivery loop. Copying the
+// subscriber set and sending after unlocking would race Disable()'s close:
+// a channel closed in between would panic on send, and a non-blocking
+// select does not save you, because a send on a closed channel is *ready*.
+// Delivery cannot block, so holding the mutex costs nothing.
 func (s *Server) Invalidate() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
