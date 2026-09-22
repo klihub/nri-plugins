@@ -2776,6 +2776,9 @@ func TestServeSnapshot(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("content type %q, expected application/json", ct)
 	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("cache control %q, expected no-store", cc)
+	}
 
 	snap := &api.Snapshot{}
 	if err := json.Unmarshal(w.Body.Bytes(), snap); err != nil {
@@ -2865,6 +2868,69 @@ func TestSnapshotIsCachedUntilInvalidated(t *testing.T) {
 	if third.Generation <= second.Generation {
 		t.Errorf("generation %d did not advance past %d",
 			third.Generation, second.Generation)
+	}
+}
+
+// TestSlowCollectionDoesNotClobberNewer pins the overwrite guard in
+// snapshot(): a collection that started at an older generation must not
+// replace a body already cached at a newer one.
+func TestSlowCollectionDoesNotClobberNewer(t *testing.T) {
+	var (
+		s       *Server
+		release = make(chan struct{})
+		entered = make(chan struct{})
+		calls   atomic.Int64
+	)
+
+	mux := xhttp.NewServeMux()
+	s = New(mux, func() *api.Snapshot {
+		// Only the first collection blocks; it is the one that must
+		// lose the race.
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+			return testSnapshot("slow")
+		}
+		return testSnapshot("fast")
+	})
+	s.Enable()
+
+	get := func() *api.Snapshot {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/introspect", nil))
+		snap := &api.Snapshot{}
+		if err := json.Unmarshal(w.Body.Bytes(), snap); err != nil {
+			t.Errorf("failed to unmarshal response: %v", err)
+			return nil
+		}
+		return snap
+	}
+
+	slow := make(chan *api.Snapshot, 1)
+	go func() { slow <- get() }()
+
+	<-entered    // the slow collection holds generation 1
+	s.Invalidate() // now at generation 2
+
+	if fast := get(); fast == nil || fast.Node.Name != "fast" {
+		t.Fatalf("expected the second request to collect afresh, got %+v", fast)
+	}
+
+	close(release)
+	if got := <-slow; got == nil || got.Node.Name != "slow" {
+		t.Errorf("the slow request should still see its own body, got %+v", got)
+	}
+
+	// The cached body must be the newer one, so a third request neither
+	// re-collects nor serves the superseded generation.
+	before := calls.Load()
+	third := get()
+	if third == nil || third.Node.Name != "fast" {
+		t.Errorf("cache holds the superseded body: %+v", third)
+	}
+	if calls.Load() != before {
+		t.Errorf("third request re-collected: %d calls, expected %d",
+			calls.Load(), before)
 	}
 }
 
@@ -2962,8 +3028,9 @@ const (
 type Snapshot = api.Snapshot
 
 // CollectFn returns a fresh snapshot. It must be safe to call from an HTTP
-// handler goroutine; the resource manager's implementation takes its read
-// lock.
+// handler goroutine — the resource manager's implementation takes its read
+// lock — and it must return a snapshot the server may mutate and retain, not
+// a shared or pooled one: the server stamps the generation into it.
 type CollectFn func() *Snapshot
 
 // Server serves the introspection interface.
@@ -3070,6 +3137,17 @@ func notify(ch chan uint64, gen uint64) {
 // collect() is deliberately called with the mutex released: it takes the
 // resource manager's read lock, and Invalidate() runs while that lock is
 // held for writing. Holding this mutex across collect() would deadlock.
+//
+// The generation is sampled before collecting, so a body may reflect state
+// newer than its stamp claims — never older. That direction is the safe one:
+// a client told generation N never concludes it is current when it is not.
+// The cost is that a collection racing an invalidation is cached under an
+// already-superseded generation and will never be hit, so on a node changing
+// constantly the cache simply stops helping.
+//
+// The returned slice is shared by every concurrent request. It is only ever
+// replaced, never appended to or written through, which is what makes that
+// safe — do not "optimise" it into a reused buffer.
 func (s *Server) snapshot() ([]byte, error) {
 	s.mu.Lock()
 	gen := s.generation
@@ -3093,9 +3171,11 @@ func (s *Server) snapshot() ([]byte, error) {
 	}
 
 	s.mu.Lock()
-	// Another request may have finished a newer collection meanwhile;
-	// keep whichever is newer.
-	if s.cached == nil || s.cachedGen <= gen {
+	// Another request may have finished a newer collection meanwhile; keep
+	// that one. A completing collection always stores under its own
+	// generation, never a newer one, so this cannot cache a stale body
+	// under a newer stamp.
+	if s.cachedGen < gen {
 		s.cached, s.cachedGen = data, gen
 	}
 	s.mu.Unlock()
@@ -3105,6 +3185,12 @@ func (s *Server) snapshot() ([]byte, error) {
 
 // serveSnapshot serves the node state snapshot.
 func (s *Server) serveSnapshot(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	data, err := s.snapshot()
 	if err != nil {
 		log.Errorf("failed to produce snapshot: %v", err)
@@ -3212,10 +3298,34 @@ Call `m.setupIntrospection()` in `NewResourceManager()`, right after
 `m.setupHealthCheck()`.
 
 Call `m.configureIntrospection(&mCfg.Instrumentation)` in **both** places that
-call `instrumentation.Reconfigure(&mCfg.Instrumentation)`: in `start()` and in
-the `apply` closure inside `reconfigure()`. Place it immediately after the
-`instrumentation.Reconfigure` call, so that the HTTP server is configured before
-handlers are registered on it.
+configure instrumentation, but not in the same position in each:
+
+- In `reconfigure()`'s `apply` closure, immediately after
+  `instrumentation.Reconfigure(&mCfg.Instrumentation)`. `reconfigure()` runs
+  under `m.Lock()`, so an in-flight request simply blocks on `m.RLock()` and
+  can never observe half-applied state.
+- In `start()`, at the **end**, after `m.startEventProcessing()`.
+
+The asymmetry is load-bearing. `start()` does **not** hold the resource manager
+lock, so registering the handler early publishes a live endpoint over
+half-initialised state: `instrumentation.Reconfigure` has already brought the
+listener up, while `start()` still has `m.policy.Start()`, `setupDRA`,
+`m.nri.start()` and `startEventProcessing()` ahead of it. Two things then go
+wrong, and the second is fatal:
+
+1. A request in that window is answered with a snapshot collected before the
+   policy started and before NRI synchronisation — a partial workload set
+   presented as a complete node state.
+2. `collectIntrospection()`'s `m.RLock()` only excludes writers that take
+   `m.Lock()`, and in the `start()` window there is no such writer, so the read
+   is unsynchronised. `cache.Cache.GetPods()` and `GetContainers()` range over
+   maps with no mutex of their own, so a concurrent map write during that window
+   is a Go runtime throw — "concurrent map iteration and map write" — which
+   kills the plugin rather than degrading the answer.
+
+Registering last means no request can reach the collector until the plugin is
+actually serving, at which point NRI handlers do take `m.Lock()` and the read
+lock means what its doc comment claims.
 
 **Getting at the discovered system.** The cache does not expose it, and resmgr
 does not hold it: `policy.NewPolicy()` calls `system.DiscoverSystem()` and keeps
