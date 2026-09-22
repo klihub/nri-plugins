@@ -23,6 +23,7 @@
 - `testdata/` is gitignored repo-wide (see `.gitignore`), so test fixtures are either in-test literals or extracted from a committed tarball. Do not expect to commit a file under any `testdata/` directory.
 - Commit messages: subject line, blank line, body wrapped at 60 columns, ending with `Signed-off-by: Krisztian Litkey <krisztian.litkey@intel.com>` and `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
 - Run `gofmt -l` over touched files before each commit; the repo has no tolerance for unformatted Go.
+- **Never discard changes you did not make.** Do not run `git checkout --`, `git restore`, `git stash`, `git clean`, or any other command that reverts the working tree, and never `git add` a path outside your task's file list. This worktree can hold in-flight edits to files your task does not touch — notably the plan and spec under `docs/` — and one implementer has already destroyed some that way. Stage your own files by name and commit only those.
 
 ## File Structure
 
@@ -871,6 +872,9 @@ func discover(t *testing.T, sample string) sysfs.System {
 		t.Skipf("fixture %s missing, run ./test-setup.sh: %v", sample, err)
 	}
 
+	// The sysroot is process-global, and later tasks add tests to this
+	// package that must not inherit it.
+	t.Cleanup(func() { sysfs.SetSysRoot("") })
 	sysfs.SetSysRoot(root)
 
 	sys, err := sysfs.DiscoverSystem()
@@ -961,6 +965,16 @@ func TestCollectHardwareMapping(t *testing.T) {
 			t.Errorf("CPU %d: NUMA node %d, expected %d",
 				c.ID, c.NUMANode, cpu.NodeID())
 		}
+		// Die and Cluster are asserted too: both are usually 0, so a
+		// swapped assignment would be invisible without this.
+		if c.Die != int(cpu.DieID()) {
+			t.Errorf("CPU %d: die %d, expected %d",
+				c.ID, c.Die, cpu.DieID())
+		}
+		if c.Cluster != int(cpu.ClusterID()) {
+			t.Errorf("CPU %d: cluster %d, expected %d",
+				c.ID, c.Cluster, cpu.ClusterID())
+		}
 		if c.Core != int(cpu.CoreID()) {
 			t.Errorf("CPU %d: core %d, expected %d",
 				c.ID, c.Core, cpu.CoreID())
@@ -1000,7 +1014,90 @@ func TestCollectHardwareMapping(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectHardwareNodeAssociation cross-checks the two independent
+// encodings of the node-to-package relation: Die.NUMANodes, derived from the
+// package side, against NUMANode.Package and NUMANode.Die, derived from the
+// node side. Agreement is not automatic, and without this the whole
+// association could go missing unnoticed.
+func TestCollectHardwareNodeAssociation(t *testing.T) {
+	sys := discover(t, "sample2")
+	hw := collectHardware(sys)
+
+	byID := map[int]*api.NUMANode{}
+	for _, n := range hw.NUMANodes {
+		byID[n.ID] = n
+	}
+
+	listed := map[int]bool{}
+	for _, p := range hw.Packages {
+		for _, d := range p.Dies {
+			for _, id := range d.NUMANodes {
+				listed[id] = true
+
+				n, ok := byID[id]
+				if !ok {
+					t.Errorf("package %d die %d lists unknown NUMA node %d",
+						p.ID, d.ID, id)
+					continue
+				}
+				if n.Package == nil || n.Die == nil {
+					t.Errorf("NUMA node %d is listed by package %d die %d "+
+						"but claims no package or die", id, p.ID, d.ID)
+					continue
+				}
+				if *n.Package != p.ID || *n.Die != d.ID {
+					t.Errorf("NUMA node %d claims package %d die %d, "+
+						"but is listed by package %d die %d",
+						id, *n.Package, *n.Die, p.ID, d.ID)
+				}
+			}
+		}
+	}
+
+	if len(listed) == 0 {
+		t.Fatal("no package lists any NUMA node, so nothing was checked")
+	}
+
+	// Conversely, a node claiming a package must be listed by one.
+	for _, n := range hw.NUMANodes {
+		if n.Package != nil && !listed[n.ID] {
+			t.Errorf("NUMA node %d claims package %d but no die lists it",
+				n.ID, *n.Package)
+		}
+	}
+}
+
+// TestCollectHardwareCoreKinds checks the only derived, non-pass-through
+// mapping in the collector. The sample1 fixture reports both a P-core and an
+// E-core set, so this is not vacuous.
+func TestCollectHardwareCoreKinds(t *testing.T) {
+	sys := discover(t, "sample1")
+	hw := collectHardware(sys)
+
+	if len(hw.CoreKinds) < 2 {
+		t.Fatalf("expected at least 2 core kinds in sample1, got %v",
+			hw.CoreKinds)
+	}
+
+	tagged := map[int]string{}
+	for kind, cpus := range hw.CoreKinds {
+		for _, id := range cpuset.MustParse(cpus).List() {
+			tagged[id] = kind
+		}
+	}
+
+	for _, c := range hw.CPUs {
+		if c.CoreKind != tagged[c.ID] {
+			t.Errorf("CPU %d: core kind %q, expected %q",
+				c.ID, c.CoreKind, tagged[c.ID])
+		}
+	}
+}
 ```
+
+The two new tests need `"github.com/containers/nri-plugins/pkg/introspect/api"`
+in the test file's imports.
 
 - [ ] **Step 3: Run the test to verify it fails**
 
@@ -1073,7 +1170,9 @@ func collectHardware(sys system.System) *api.Hardware {
 			CPUs:         node.CPUSet().String(),
 			MemoryType:   node.GetMemoryType().String(),
 			NormalMemory: node.HasNormalMemory(),
-			Distance:     node.Distance(),
+			// Cloned: sysfs hands out its own slice, and a snapshot
+			// must not alias discovered system state.
+			Distance: slices.Clone(node.Distance()),
 		}
 		// A memory-only node belongs to no package or die. sysfs
 		// leaves both IDs at zero for such a node, which is
@@ -1083,12 +1182,32 @@ func collectHardware(sys system.System) *api.Hardware {
 			pkgID, dieID := int(node.PackageID()), int(node.DieID())
 			n.Package, n.Die = &pkgID, &dieID
 		}
-		if info, err := node.MemoryInfo(); err == nil && info != nil {
+		if info, err := node.MemoryInfo(); err != nil || info == nil {
+			log.Warnf("no memory info for NUMA node %d: %v", id, err)
+		} else {
 			n.Capacity = int64(info.MemTotal)
-		} else if err != nil {
-			log.Warnf("failed to get memory info for NUMA node %d: %v", id, err)
 		}
 		hw.NUMANodes = append(hw.NUMANodes, n)
+	}
+
+	// Collect the core-kind sets first, so that each CPU can be tagged
+	// with its own kind below and a consumer needs no reverse lookup.
+	// The sets are used rather than sysfs.CPU.CoreKind() because the
+	// latter's zero value is "P-core", which would label every CPU on
+	// hardware that reports no core kinds at all.
+	kindOfCPU := map[int]string{}
+	for _, kind := range sys.CoreKinds() {
+		cpus := sys.CoreKindCPUs(kind)
+		if cpus.IsEmpty() {
+			continue
+		}
+		if hw.CoreKinds == nil {
+			hw.CoreKinds = map[string]string{}
+		}
+		hw.CoreKinds[kind.String()] = cpus.String()
+		for _, cpu := range cpus.List() {
+			kindOfCPU[cpu] = kind.String()
+		}
 	}
 
 	for _, id := range sys.CPUIDs() {
@@ -1102,6 +1221,7 @@ func collectHardware(sys system.System) *api.Hardware {
 			NUMANode: int(cpu.NodeID()),
 			Core:     int(cpu.CoreID()),
 			Threads:  cpu.ThreadCPUSet().String(),
+			CoreKind: kindOfCPU[int(id)],
 			Online:   cpu.Online(),
 			Isolated: cpu.Isolated(),
 			BaseFreq: freq.Base,
@@ -1111,31 +1231,12 @@ func collectHardware(sys system.System) *api.Hardware {
 		hw.CPUs = append(hw.CPUs, c)
 	}
 
-	for _, kind := range sys.CoreKinds() {
-		cpus := sys.CoreKindCPUs(kind)
-		if cpus.IsEmpty() {
-			continue
-		}
-		if hw.CoreKinds == nil {
-			hw.CoreKinds = map[string]string{}
-		}
-		hw.CoreKinds[kind.String()] = cpus.String()
-	}
-
-	// Tag each CPU with its core kind, so a consumer needs no reverse
-	// lookup through CoreKinds.
-	for kind, cpus := range hw.CoreKinds {
-		set := cpuset.MustParse(cpus)
-		for _, c := range hw.CPUs {
-			if set.Contains(c.ID) {
-				c.CoreKind = kind
-			}
-		}
-	}
-
 	return hw
 }
 ```
+
+`slices` comes from the standard library. `cpuset` is not needed in
+`collect.go` at all after this — only the test file parses cpusets.
 
 `pkg/sysfs` is imported once, under the `system` alias, matching how
 `pkg/resmgr/policy/policy.go` refers to it.
