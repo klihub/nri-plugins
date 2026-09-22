@@ -16,7 +16,6 @@ package introspect
 
 import (
 	"slices"
-	"sort"
 	"strings"
 
 	nri "github.com/containerd/nri/pkg/api"
@@ -240,18 +239,17 @@ func collectWorkloads(c Cache) ([]*api.Pod, []*api.Container) {
 			container.MemoryLimit = q.Value()
 		}
 
-		for name, value := range map[string]string{
-			"rdt":     ctr.GetRDTClass(),
-			"blockio": ctr.GetBlockIOClass(),
-		} {
+		setClass := func(name, value string) {
 			if value == "" {
-				continue
+				return
 			}
 			if container.Classes == nil {
 				container.Classes = map[string]string{}
 			}
 			container.Classes[name] = value
 		}
+		setClass("rdt", ctr.GetRDTClass())
+		setClass("blockio", ctr.GetBlockIOClass())
 
 		for _, h := range ctr.GetTopologyHints() {
 			container.Hints = append(container.Hints, &api.Hint{
@@ -262,12 +260,23 @@ func collectWorkloads(c Cache) ([]*api.Pod, []*api.Container) {
 				IRQs:     h.IRQs,
 			})
 		}
-		sort.Slice(container.Hints, func(i, j int) bool {
-			return container.Hints[i].Provider < container.Hints[j].Provider
+		slices.SortFunc(container.Hints, func(a, b *api.Hint) int {
+			return strings.Compare(a.Provider, b.Provider)
 		})
 
 		containers = append(containers, container)
 	}
+
+	// The cache builds both of its slices by ranging over maps, and hints
+	// come from a map too, so nothing here arrives in a stable order.
+	// Sorting is what keeps two snapshots of an unchanged node identical,
+	// which is what makes diffing them on a change notification useful.
+	slices.SortFunc(pods, func(a, b *api.Pod) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+	slices.SortFunc(containers, func(a, b *api.Container) int {
+		return strings.Compare(a.ID, b.ID)
+	})
 
 	return pods, containers
 }

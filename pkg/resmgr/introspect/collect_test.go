@@ -15,10 +15,11 @@
 package introspect
 
 import (
-	"encoding/json"
 	"os"
 	"path"
-	"strings"
+	"reflect"
+	"regexp"
+	"slices"
 	"testing"
 
 	nri "github.com/containerd/nri/pkg/api"
@@ -279,22 +280,39 @@ func TestCollectWorkloads(t *testing.T) {
 		containers: []Container{
 			&fakeContainer{
 				id: "ctr0", podID: "pod0", name: "nginx",
-				state:        nri.ContainerState_CONTAINER_RUNNING,
-				qos:          v1.PodQOSGuaranteed,
-				requirements: requirements("4", "4", "2Gi", "2Gi"),
-				cpusetCpus:   "0-3",
+				state: nri.ContainerState_CONTAINER_RUNNING,
+				qos:   v1.PodQOSBurstable,
+				// Every one of the six numbers below is distinct, on
+				// purpose. A self-consistent Guaranteed container makes
+				// requests, limits and what was applied all equal, and
+				// then a Requests/Limits swap — or reading the applied
+				// memory limit from the requirements — passes the test.
+				// Their disagreement is the design's whole point.
+				requirements: requirements("2", "4", "1Gi", "2Gi"),
+				cpusetCpus:   "0-1",
 				cpusetMems:   "0",
-				cpuShares:    4096,
+				cpuShares:    2048,
 				cpuQuota:     400000,
 				cpuPeriod:    100000,
-				memoryLimit:  2147483648,
-				rdtClass:     "guaranteed",
+				memoryLimit:  1073741824,
+				rdtClass:     "burstable",
 				blockIOClass: "",
+				// Out of lexical order, so the collector's sort is
+				// actually exercised.
 				hints: topology.Hints{
+					"eth1": topology.Hint{
+						Provider: "/sys/class/net/eth1",
+						CPUs:     "2-3",
+						NUMAs:    "1",
+						Sockets:  "1",
+						IRQs:     []int{129},
+					},
 					"eth0": topology.Hint{
 						Provider: "/sys/class/net/eth0",
-						CPUs:     "0-3",
+						CPUs:     "0-1",
 						NUMAs:    "0",
+						Sockets:  "0",
+						IRQs:     []int{128},
 					},
 				},
 			},
@@ -323,47 +341,123 @@ func TestCollectWorkloads(t *testing.T) {
 	if got.State != "running" {
 		t.Errorf("state %q, expected \"running\"", got.State)
 	}
-	if got.CPURequest != 4000 || got.CPULimit != 4000 {
-		t.Errorf("CPU request/limit %d/%d, expected 4000/4000",
-			got.CPURequest, got.CPULimit)
+	if got.QOSClass != "Burstable" {
+		t.Errorf("QoS class %q, expected \"Burstable\"", got.QOSClass)
 	}
-	if got.MemoryRequest != 2147483648 || got.MemoryLimit != 2147483648 {
-		t.Errorf("memory request/limit %d/%d, expected 2147483648 twice",
-			got.MemoryRequest, got.MemoryLimit)
+
+	// Requested: from the Kubernetes resource requirements.
+	if got.CPURequest != 2000 {
+		t.Errorf("CPU request %d, expected 2000", got.CPURequest)
 	}
+	if got.CPULimit != 4000 {
+		t.Errorf("CPU limit %d, expected 4000", got.CPULimit)
+	}
+	if got.MemoryRequest != 1073741824 {
+		t.Errorf("memory request %d, expected 1073741824", got.MemoryRequest)
+	}
+	if got.MemoryLimit != 2147483648 {
+		t.Errorf("memory limit %d, expected 2147483648", got.MemoryLimit)
+	}
+
+	// Applied: from the container itself. Note the memory limit differs
+	// from the requested one above.
 	if got.Applied == nil {
 		t.Fatal("applied resources missing")
 	}
-	if got.Applied.CpusetCpus != "0-3" || got.Applied.CpusetMems != "0" {
+	if got.Applied.CpusetCpus != "0-1" || got.Applied.CpusetMems != "0" {
 		t.Errorf("unexpected applied cpuset: %+v", got.Applied)
 	}
-	if got.Applied.CPUShares != 4096 || got.Applied.CPUQuota != 400000 ||
-		got.Applied.CPUPeriod != 100000 ||
-		got.Applied.MemoryLimit != 2147483648 {
+	if got.Applied.CPUShares != 2048 || got.Applied.CPUQuota != 400000 ||
+		got.Applied.CPUPeriod != 100000 {
 		t.Errorf("unexpected applied cgroup parameters: %+v", got.Applied)
 	}
-	if got.Classes["rdt"] != "guaranteed" {
-		t.Errorf("rdt class %q, expected \"guaranteed\"", got.Classes["rdt"])
+	if got.Applied.MemoryLimit != 1073741824 {
+		t.Errorf("applied memory limit %d, expected 1073741824",
+			got.Applied.MemoryLimit)
+	}
+
+	if got.Classes["rdt"] != "burstable" {
+		t.Errorf("rdt class %q, expected \"burstable\"", got.Classes["rdt"])
 	}
 	if _, ok := got.Classes["blockio"]; ok {
 		t.Error("empty blockio class should be omitted")
 	}
-	if len(got.Hints) != 1 || got.Hints[0].Provider != "/sys/class/net/eth0" {
-		t.Errorf("unexpected hints: %+v", got.Hints)
+
+	// Hints come from a map, so the collector sorts them by provider.
+	if len(got.Hints) != 2 {
+		t.Fatalf("expected 2 hints, got %d: %+v", len(got.Hints), got.Hints)
+	}
+	if got.Hints[0].Provider != "/sys/class/net/eth0" ||
+		got.Hints[1].Provider != "/sys/class/net/eth1" {
+		t.Errorf("hints are not sorted by provider: %q then %q",
+			got.Hints[0].Provider, got.Hints[1].Provider)
+	}
+	if got.Hints[0].CPUs != "0-1" || got.Hints[0].NUMAs != "0" ||
+		got.Hints[0].Sockets != "0" ||
+		!reflect.DeepEqual(got.Hints[0].IRQs, []int{128}) {
+		t.Errorf("unexpected first hint: %+v", got.Hints[0])
 	}
 }
 
-func TestCollectWorkloadsNoArgs(t *testing.T) {
-	// The removed introspection API exposed container command lines.
-	// Make sure no field of that shape came back.
-	if _, ok := any(&api.Container{}).(interface{ GetArgs() []string }); ok {
-		t.Error("api.Container must not expose command line arguments")
+// TestContainerHasNoArguments enforces the prohibition on exposing
+// container command lines: the removed introspection API published them,
+// and command lines leak credentials.
+//
+// This reflects over the struct rather than marshalling one. Every optional
+// field is omitempty, so an added Args field would be nil in a zero value
+// and absent from the JSON — a marshal-and-grep test passes whether or not
+// the field exists, which makes it worthless for the one prohibition the
+// design calls security-critical.
+func TestContainerHasNoArguments(t *testing.T) {
+	forbidden := regexp.MustCompile(`(?i)arg|command|cmd|entrypoint`)
+
+	typ := reflect.TypeOf(api.Container{})
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+
+		if forbidden.MatchString(field.Name) {
+			t.Errorf("api.Container.%s looks like a command line", field.Name)
+		}
+		if tag := field.Tag.Get("json"); forbidden.MatchString(tag) {
+			t.Errorf("api.Container.%s has JSON tag %q, which looks like a "+
+				"command line", field.Name, tag)
+		}
 	}
-	data, err := json.Marshal(&api.Container{})
-	if err != nil {
-		t.Fatalf("failed to marshal: %v", err)
+}
+
+// TestCollectWorkloadsIsOrdered pins the ordering of the two lists. The
+// cache builds its own slices by ranging over maps, so without sorting two
+// snapshots of an unchanged node differ, which makes diffing them — the
+// thing the UI does on every change notification — useless.
+func TestCollectWorkloadsIsOrdered(t *testing.T) {
+	c := &fakeCache{
+		pods: []Pod{
+			&fakePod{id: "pod2", uid: "uid2", name: "c", namespace: "default"},
+			&fakePod{id: "pod0", uid: "uid0", name: "a", namespace: "default"},
+			&fakePod{id: "pod1", uid: "uid1", name: "b", namespace: "default"},
+		},
+		containers: []Container{
+			&fakeContainer{id: "ctr2", podID: "pod2", name: "c"},
+			&fakeContainer{id: "ctr0", podID: "pod0", name: "a"},
+			&fakeContainer{id: "ctr1", podID: "pod1", name: "b"},
+		},
 	}
-	if strings.Contains(string(data), "args") {
-		t.Errorf("container JSON mentions args: %s", data)
+
+	pods, containers := collectWorkloads(c)
+
+	podIDs := make([]string, 0, len(pods))
+	for _, p := range pods {
+		podIDs = append(podIDs, p.ID)
+	}
+	if !slices.IsSorted(podIDs) {
+		t.Errorf("pods are not sorted by ID: %v", podIDs)
+	}
+
+	ctrIDs := make([]string, 0, len(containers))
+	for _, ctr := range containers {
+		ctrIDs = append(ctrIDs, ctr.ID)
+	}
+	if !slices.IsSorted(ctrIDs) {
+		t.Errorf("containers are not sorted by ID: %v", ctrIDs)
 	}
 }
