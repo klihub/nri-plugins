@@ -2252,6 +2252,12 @@ func TestCollect(t *testing.T) {
 		t.Errorf("config data does not carry the configuration: %s",
 			snap.Config.Data)
 	}
+	// Data must be the whole resource, not just its spec: the metadata
+	// rides along inside it as well as in the sibling fields.
+	if !strings.Contains(string(snap.Config.Data), `"name":"node.worker-1"`) {
+		t.Errorf("config data does not carry the metadata: %s",
+			snap.Config.Data)
+	}
 
 	// A snapshot must marshal, since that is all the server does with it.
 	if _, err := json.Marshal(snap); err != nil {
@@ -2268,8 +2274,26 @@ func TestCollectWithoutConfig(t *testing.T) {
 	if snap.Hardware != nil {
 		t.Errorf("expected no hardware section, got %+v", snap.Hardware)
 	}
+	if len(snap.Pods) != 0 || len(snap.Containers) != 0 {
+		t.Errorf("expected no pods or containers, got %d and %d",
+			len(snap.Pods), len(snap.Containers))
+	}
 	if snap.Derived == nil {
 		t.Error("derived section should still be present")
+	}
+}
+
+// TestCollectConfigTypedNil covers the typed-nil case: an interface holding
+// a nil pointer is not == nil, and the promoted GetObjectMeta() on one
+// panics. Without the isNil guard this test panics rather than failing.
+func TestCollectConfigTypedNil(t *testing.T) {
+	var cfg *fakeConfig // nil pointer, non-nil interface once assigned
+
+	snap := Collect(&Input{NodeName: "worker-1", Policy: "none", Config: cfg})
+
+	if snap.Config != nil {
+		t.Errorf("expected no config section for a typed nil, got %+v",
+			snap.Config)
 	}
 }
 ```
@@ -2306,7 +2330,7 @@ type Input struct {
 func Collect(in *Input) *api.Snapshot {
 	snap := &api.Snapshot{
 		Version:   api.Version,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UTC(),
 		Node: api.Node{
 			Name:    in.NodeName,
 			Policy:  in.Policy,
@@ -2329,18 +2353,17 @@ func Collect(in *Input) *api.Snapshot {
 // interpreted: a consumer that is not itself policy-specific should display
 // it, not parse it.
 func collectConfig(cfg cfgapi.ResmgrConfig) *api.Config {
-	if cfg == nil {
+	if isNil(cfg) {
 		return nil
 	}
 
 	c := &api.Config{}
 
-	if meta := cfg.GetObjectMeta(); meta != nil {
-		c.Name = meta.GetName()
-		c.Namespace = meta.GetNamespace()
-		c.Generation = meta.GetGeneration()
-		c.ResourceVersion = meta.GetResourceVersion()
-	}
+	meta := cfg.GetObjectMeta()
+	c.Name = meta.GetName()
+	c.Namespace = meta.GetNamespace()
+	c.Generation = meta.GetGeneration()
+	c.ResourceVersion = meta.GetResourceVersion()
 
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -2351,9 +2374,28 @@ func collectConfig(cfg cfgapi.ResmgrConfig) *api.Config {
 
 	return c
 }
+
+// isNil reports whether a configuration interface is nil or holds a nil
+// pointer.
+//
+// This is not pedantry. The concrete types satisfy ResmgrConfig's embedded
+// ObjectMetaAccessor by promoting GetObjectMeta() from an embedded
+// metav1.ObjectMeta, so calling it on a typed nil pointer dereferences that
+// nil and panics — inside an HTTP handler. A plain cfg == nil does not catch
+// a typed nil, so the invariant is enforced here rather than trusted of
+// every future caller.
+func isNil(cfg cfgapi.ResmgrConfig) bool {
+	if cfg == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(cfg)
+
+	return v.Kind() == reflect.Ptr && v.IsNil()
+}
 ```
 
-Add `encoding/json`, `time` and
+Add `encoding/json`, `reflect`, `time` and
 `cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1"` to
 `collect.go`'s imports.
 
@@ -2364,10 +2406,9 @@ and `status` sections, and a consumer looking for a policy setting finds it unde
 fields duplicate part of that metadata on purpose, so that the common case needs
 no digging into an opaque blob.
 
-Note `cfg == nil` alone is not enough if a typed nil pointer is passed in an
-interface. If the test in Step 1 passes but the plugin later panics here,
-that is the cause; the resmgr wiring in Task 7 only passes `m.cfg` once it is
-set, so it does not arise there.
+Also change `Collect`'s timestamp to `time.Now().UTC()`, so that the wire
+format has one representation of time rather than whatever offset the node's
+zone happens to be in.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
