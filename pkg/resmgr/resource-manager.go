@@ -416,10 +416,30 @@ func (m *resmgr) updateNodeExtendedResources() {
 // Call this wherever resource assignments may have changed. Keeping the
 // publishers together means a new one cannot be forgotten at one of the
 // call sites.
+//
+// Safe to call with our write lock held: the topology zone and extended
+// resource publishers hand off to the agent asynchronously, and
+// invalidateIntrospection takes only the introspection server's own mutex
+// and never collects.
 func (m *resmgr) publishNodeState() {
 	m.updateTopologyZones()
 	m.updateNodeExtendedResources()
+	m.invalidateIntrospection()
+}
 
+// invalidateIntrospection marks the introspection snapshot stale.
+//
+// Call this wherever the snapshot's *contents* change, which is a wider set
+// of places than where resource assignments change: the snapshot carries the
+// whole pod and container list, so inserting or deleting a pod, a container
+// starting, or a container's resources being updated all make the cached
+// body wrong even when no pool-level allocation moved.
+//
+// Those sites deliberately call this rather than publishNodeState(): they
+// have no business pushing topology zone CRs or extended resources to the
+// API server, and making them do so would be a behaviour change well
+// outside introspection.
+func (m *resmgr) invalidateIntrospection() {
 	if m.introspect != nil {
 		m.introspect.Invalidate()
 	}

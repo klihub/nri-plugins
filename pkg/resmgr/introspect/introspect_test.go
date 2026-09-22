@@ -349,7 +349,11 @@ func TestServeEvents(t *testing.T) {
 	}
 
 	// Coalescing is tested deterministically in TestNotificationsCoalesce.
-	// Here we just verify that events are being delivered.
+	// Here we just verify that events are being delivered. We cannot assert
+	// that we got exactly one or two events: because Go's select picks arms at
+	// random when multiple are ready, we might receive both generations or just
+	// the later one. The design guarantees a subscriber that keeps reading gets
+	// every generation; one that does not gets at least one pending later.
 
 	if s.subscribers() != 0 {
 		t.Errorf("subscriber not cleaned up: %d remain", s.subscribers())
@@ -361,13 +365,15 @@ func TestServeEvents(t *testing.T) {
 // the handler has returned, which is useless for a stream that only ends
 // when the test says so.
 //
-// Header() returns the live map with no mutex and must not be read while
-// the handler is running. Tests must use headerGet() instead.
+// Header() returns the live map and must never be read or written while
+// the handler is running. Tests must use headerGet() and status() instead,
+// which read the headers sent by WriteHeader.
 // Safe readers are headerGet(), status(), and body().
 type syncRecorder struct {
 	mu      sync.Mutex
 	buf     bytes.Buffer
 	hdr     http.Header
+	sent    http.Header // cloned headers after WriteHeader
 	code    int
 	written chan struct{}
 }
@@ -375,6 +381,7 @@ type syncRecorder struct {
 func newSyncRecorder() *syncRecorder {
 	return &syncRecorder{
 		hdr:     http.Header{},
+		sent:    http.Header{},
 		written: make(chan struct{}, 1),
 	}
 }
@@ -385,6 +392,12 @@ func (r *syncRecorder) WriteHeader(code int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Clone headers so tests can safely read them afterwards.
+	for key, values := range r.hdr {
+		for _, v := range values {
+			r.sent.Add(key, v)
+		}
+	}
 	r.code = code
 }
 
@@ -410,12 +423,13 @@ func (r *syncRecorder) body() string {
 	return r.buf.String()
 }
 
-// headerGet returns the value of a header field, safely.
+// headerGet returns the value of a header field that was sent.
+// Only headers set before WriteHeader was called are available.
 func (r *syncRecorder) headerGet(key string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return r.hdr.Get(key)
+	return r.sent.Get(key)
 }
 
 // status returns the response code, safely.

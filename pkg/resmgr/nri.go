@@ -362,6 +362,7 @@ func (p *nriPlugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) (ret
 	defer m.Unlock()
 
 	m.cache.InsertPod(pod, podResCh)
+	m.invalidateIntrospection()
 
 	return nil
 }
@@ -444,6 +445,7 @@ func (p *nriPlugin) RemovePodSandbox(ctx context.Context, podSandbox *api.PodSan
 	}
 
 	m.cache.DeletePod(podSandbox.GetId())
+	m.invalidateIntrospection()
 	return nil
 }
 
@@ -567,6 +569,7 @@ func (p *nriPlugin) StartContainer(ctx context.Context, pod *api.PodSandbox, con
 			event, c.PrettyName(), err)
 	}
 
+	m.invalidateIntrospection()
 	return nil
 }
 
@@ -629,6 +632,7 @@ func (p *nriPlugin) UpdateContainer(ctx context.Context, pod *api.PodSandbox, co
 		}
 	}
 
+	m.invalidateIntrospection()
 	return p.getPendingUpdates(nil), nil
 }
 
@@ -692,6 +696,7 @@ func (p *nriPlugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, co
 	defer m.Unlock()
 
 	m.cache.DeleteContainer(container.Id)
+	m.invalidateIntrospection()
 	return nil
 }
 
