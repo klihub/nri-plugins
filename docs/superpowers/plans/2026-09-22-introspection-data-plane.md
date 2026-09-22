@@ -3485,8 +3485,11 @@ func TestServeEvents(t *testing.T) {
 		t.Fatal("handler did not return after the request was cancelled")
 	}
 
-	if ct := w.Header().Get("Content-Type"); ct != "text/event-stream" {
+	if ct := w.headerGet("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content type %q, expected text/event-stream", ct)
+	}
+	if code := w.status(); code != http.StatusOK {
+		t.Errorf("status %d, expected %d", code, http.StatusOK)
 	}
 
 	body := w.body()
@@ -3508,6 +3511,10 @@ func TestServeEvents(t *testing.T) {
 // is still writing. httptest.ResponseRecorder cannot be read safely until
 // the handler has returned, which is useless for a stream that only ends
 // when the test says so.
+//
+// Read it through body(), headerGet() and status() — every one of those
+// takes the mutex. Header() returns the live map for the handler's own use
+// and is not safe for a test to read concurrently.
 type syncRecorder struct {
 	mu      sync.Mutex
 	buf     bytes.Buffer
@@ -3523,6 +3530,7 @@ func newSyncRecorder() *syncRecorder {
 	}
 }
 
+// Header is the handler's own accessor. A test must use headerGet instead.
 func (r *syncRecorder) Header() http.Header { return r.hdr }
 
 func (r *syncRecorder) WriteHeader(code int) {
@@ -3552,6 +3560,22 @@ func (r *syncRecorder) body() string {
 	defer r.mu.Unlock()
 
 	return r.buf.String()
+}
+
+// headerGet reads a response header safely while the handler runs.
+func (r *syncRecorder) headerGet(key string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.hdr.Get(key)
+}
+
+// status reads the response status safely while the handler runs.
+func (r *syncRecorder) status() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.code
 }
 
 // waitForWrite blocks until the handler has written something.
@@ -3814,7 +3838,7 @@ func (s *Server) subscribe() (chan uint64, bool) {
 		return nil, false
 	}
 
-	// Buffered for one value: notify() never blocks, and a subscriber
+	// Buffered for one value: delivery never blocks, and a subscriber
 	// refetches the current snapshot anyway, so a coalesced older
 	// generation loses nothing.
 	ch := make(chan uint64, 1)
@@ -3907,7 +3931,12 @@ func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// Read under the mutex like every other field of Server, even though
+	// only a test ever writes it.
+	s.mu.Lock()
 	interval := s.heartbeat
+	s.mu.Unlock()
+
 	if interval <= 0 {
 		interval = heartbeatInterval
 	}
