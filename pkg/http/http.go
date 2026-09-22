@@ -103,11 +103,18 @@ func (mux *ServeMux) Unregister(pattern string) (http.Handler, bool) {
 }
 
 // ServeHTTP serves a HTTP request.
+//
+// The handler runs with our lock released. Unregister replaces the
+// underlying mux rather than mutating it, so a request keeps serving from
+// the one it started with — and a long-lived handler, such as an event
+// stream, cannot block an unregistration for its whole lifetime.
 func (mux *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.RLock()
-	defer mux.RUnlock()
+	serve := mux.mux
+	mux.RUnlock()
+
 	log.Debugf("serving %s...", r.URL)
-	mux.mux.ServeHTTP(w, r)
+	serve.ServeHTTP(w, r)
 }
 
 // Server is our HTTP server, with support for unregistering handlers.

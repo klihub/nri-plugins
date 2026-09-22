@@ -30,10 +30,15 @@ const (
 	EventsPath = "/introspect/events"
 )
 
+// Snapshot aliases the wire format's snapshot type, so that consumers of
+// this package need not import the api package alongside it. That matters in
+// pkg/resmgr, where the identifier `api` already means containerd's NRI api.
+type Snapshot = api.Snapshot
+
 // CollectFn returns a fresh snapshot. It must be safe to call from an HTTP
 // handler goroutine; the resource manager's implementation takes its read
 // lock.
-type CollectFn func() *api.Snapshot
+type CollectFn func() *Snapshot
 
 // Server serves the introspection interface.
 //

@@ -24,7 +24,6 @@ import (
 	"github.com/containers/nri-plugins/pkg/healthz"
 	"github.com/containers/nri-plugins/pkg/instrumentation"
 	"github.com/containers/nri-plugins/pkg/instrumentation/coverage"
-	"github.com/containers/nri-plugins/pkg/introspect/api"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/pidfile"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
@@ -332,20 +331,23 @@ func (m *resmgr) configureIntrospection(cfg *cfgintr.Config) {
 // avoid collecting halfway through an allocation. A request can therefore
 // block behind a long allocation, which is acceptable for a read-only
 // inspection interface.
-func (m *resmgr) collectIntrospection() *api.Snapshot {
+func (m *resmgr) collectIntrospection() *introspect.Snapshot {
 	m.RLock()
 	defer m.RUnlock()
 
-	policyName := ""
+	var (
+		policyName string
+		sys        sysfs.System
+	)
 	if m.policy != nil {
-		policyName = m.policy.ActivePolicy()
+		policyName, sys = m.policy.ActivePolicy(), m.policy.System()
 	}
 
 	return introspect.Collect(&introspect.Input{
 		NodeName: m.agent.NodeName(),
 		Policy:   policyName,
 		Version:  version.Version,
-		System:   m.policy.System(),
+		System:   sys,
 		Cache:    introspect.CacheOf(m.cache),
 		Config:   m.cfg,
 	})

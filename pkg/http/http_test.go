@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestStartStop(t *testing.T) {
@@ -110,4 +112,40 @@ func TestPatternsp(t *testing.T) {
 	checkURL(t, srv, "/a", "/", 200)
 
 	srv.Stop()
+}
+
+func TestUnregisterWithRequestInFlight(t *testing.T) {
+	// A handler must not hold up unregistration for as long as it runs. An
+	// event stream runs for the lifetime of its connection, so a single
+	// connected client would otherwise block every unregistration.
+	mux := NewServeMux()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	mux.HandleFunc("/blocking", func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+	})
+
+	go func() {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/blocking", nil))
+	}()
+
+	<-entered // the handler is running and will not return yet
+
+	done := make(chan struct{})
+	go func() {
+		mux.Unregister("/blocking")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		close(release)
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("Unregister() blocked on a request in flight")
+	}
 }
