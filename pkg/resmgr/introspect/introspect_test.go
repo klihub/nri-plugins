@@ -348,12 +348,10 @@ func TestServeEvents(t *testing.T) {
 		t.Errorf("no generation event in the stream:\n%s", body)
 	}
 
-	// Coalescing is tested deterministically in TestNotificationsCoalesce.
-	// Here we just verify that events are being delivered. We cannot assert
-	// that we got exactly one or two events: because Go's select picks arms at
-	// random when multiple are ready, we might receive both generations or just
-	// the later one. The design guarantees a subscriber that keeps reading gets
-	// every generation; one that does not gets at least one pending later.
+	// Coalescing is asserted at the channel instead, by
+	// TestNotificationsCoalesce: over HTTP a reader that drains between
+	// two invalidations legitimately sees two records, so counting them
+	// here would be asserting something the design does not promise.
 
 	if s.subscribers() != 0 {
 		t.Errorf("subscriber not cleaned up: %d remain", s.subscribers())
@@ -372,7 +370,7 @@ func TestServeEvents(t *testing.T) {
 type syncRecorder struct {
 	mu      sync.Mutex
 	buf     bytes.Buffer
-	hdr     http.Header
+	hdr     http.Header // the handler's, unguarded by design
 	sent    http.Header // cloned headers after WriteHeader
 	code    int
 	written chan struct{}
@@ -386,18 +384,18 @@ func newSyncRecorder() *syncRecorder {
 	}
 }
 
+// Header is the handler's own accessor. A test must use headerGet instead.
 func (r *syncRecorder) Header() http.Header { return r.hdr }
 
 func (r *syncRecorder) WriteHeader(code int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Clone headers so tests can safely read them afterwards.
-	for key, values := range r.hdr {
-		for _, v := range values {
-			r.sent.Add(key, v)
-		}
-	}
+	// Snapshot the headers under the mutex. A conforming handler sets them
+	// all before WriteHeader, and this is what makes headerGet meaningful:
+	// locking only the read side of a map the handler still owns would
+	// establish no happens-before at all.
+	r.sent = r.hdr.Clone()
 	r.code = code
 }
 
