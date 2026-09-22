@@ -70,7 +70,7 @@ missing:
   offline CPUs, core kinds;
 - pods and containers: identity, QoS, requests and limits, topology hints, and
   what was *actually applied* to the container (`cpuset.cpus`, `cpuset.mems`,
-  CPU shares/quota/period, memory limit, class assignments);
+  CPU shares/quota/period, memory limit, RDT and block I/O class);
 - the effective configuration the plugin is running with, as received.
 
 This drives a genuinely useful machine view, because the interesting relations
@@ -163,6 +163,12 @@ are available without new plumbing. `Data` is the configuration marshalled as
 received — `json.RawMessage` rather than typed fields, which keeps
 `pkg/introspect/api` dependency-free and means a new policy configuration field
 shows up in the snapshot with no schema work at all.
+
+The concrete types behind `ResmgrConfig` are whole custom resources —
+`*TopologyAwarePolicy` and its siblings — so `Data` has `metadata`, `spec` and
+`status` sections, and a policy setting sits under `spec`. The separate metadata
+fields duplicate part of that on purpose, so the common case needs no digging
+into an opaque blob.
 
 **A generic consumer does not interpret this blob.** Apart from `CommonConfig`,
 every key in it is policy-specific: `pinCPU` and `pinMemory` live in
@@ -278,7 +284,7 @@ type Container struct {
     MemoryLimit   int64 `json:"memoryLimit,omitempty"`   // bytes
 
     Applied *Applied          `json:"applied,omitempty"`
-    Classes map[string]string `json:"classes,omitempty"` // rdt, blockio, cpu
+    Classes map[string]string `json:"classes,omitempty"` // rdt, blockio
     Hints   []*Hint           `json:"hints,omitempty"`
 }
 
