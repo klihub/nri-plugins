@@ -49,7 +49,7 @@
 Two boundary decisions worth stating, because they are what make the rest testable:
 
 1. The collector does not take `cache.Cache`. It takes narrow interfaces declared in `pkg/resmgr/introspect` that the real cache types satisfy structurally. A fake in the tests implements a dozen methods instead of the cache's hundred.
-2. The server does not know about resmgr. It holds a `CollectFn func() *api.Snapshot`. resmgr supplies a closure that takes its read lock. Handler tests pass a stub.
+2. The server does not know about resmgr. It holds a `CollectFn func() *Snapshot`. resmgr supplies a closure that takes its read lock. Handler tests pass a stub.
 
 ## Deviations from the spec, and why
 
@@ -2620,11 +2620,59 @@ EOF
 
 **Interfaces:**
 - Consumes: `Collect()`, `Input` from Task 5; `IntrospectionEnabled()` from Task 6.
-- Produces: `type CollectFn func() *api.Snapshot`, `func New(mux *xhttp.ServeMux, collect CollectFn) *Server`,
+- Produces: `type Snapshot = api.Snapshot`, `type CollectFn func() *Snapshot`, `func New(mux *xhttp.ServeMux, collect CollectFn) *Server`,
   `func (s *Server) Enable()`, `func (s *Server) Disable()`, `func (s *Server) Invalidate()`,
   and on the resmgr side `func (m *resmgr) setupIntrospection()`,
   `func (m *resmgr) configureIntrospection(cfg *instrumentation.Config)`,
-  `func (m *resmgr) collectIntrospection() *api.Snapshot`.
+  `func (m *resmgr) collectIntrospection() *introspect.Snapshot`, and the
+  `pkg/http.ServeMux.ServeHTTP` lock fix.
+
+**A deadlock in `pkg/http` that this task must fix first.** `ServeMux.ServeHTTP`
+holds the mux's read lock for the *entire* handler execution:
+
+```go
+func (mux *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	mux.RLock()
+	defer mux.RUnlock()
+	log.Debugf("serving %s...", r.URL)
+	mux.mux.ServeHTTP(w, r)
+}
+```
+
+`Unregister` takes the write lock, so any unregistration blocks until every
+in-flight request finishes. Combined with a handler that itself needs the
+resource manager's read lock, that closes a cycle: a configuration change holds
+the resmgr write lock and waits for the mux write lock, while a request holds
+the mux read lock and waits for the resmgr read lock. Task 8 makes it far worse,
+because an SSE handler holds that read lock for the entire lifetime of a
+streaming connection — so a single connected client would block every
+unregistration indefinitely.
+
+Holding the lock across the call is also unnecessary. `Unregister` *replaces*
+`mux.mux` with a freshly built one rather than mutating it, and the standard
+library's `ServeMux` is internally synchronised, so reading the pointer under
+the lock and invoking it outside is both safe and better-behaved: an in-flight
+request keeps serving from the mux it started with.
+
+```go
+// ServeHTTP serves a HTTP request.
+//
+// The handler runs with our lock released. Unregister replaces the
+// underlying mux rather than mutating it, so a request keeps serving from
+// the one it started with — and a long-lived handler, such as an event
+// stream, cannot block an unregistration for its whole lifetime.
+func (mux *ServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	mux.RLock()
+	serve := mux.mux
+	mux.RUnlock()
+
+	log.Debugf("serving %s...", r.URL)
+	serve.ServeHTTP(w, r)
+}
+```
+
+Add a regression test in `pkg/http/http_test.go` that a handler blocked
+mid-request does not prevent `Unregister` from returning.
 
 **A deadlock you must not write.** The NRI handlers in `pkg/resmgr/nri.go` hold
 the resource manager's write lock for their whole duration (see the `m.Lock()`
@@ -2856,10 +2904,15 @@ const (
 	EventsPath = "/introspect/events"
 )
 
+// Snapshot aliases the wire format's snapshot type, so that consumers of
+// this package need not import the api package alongside it. That matters in
+// pkg/resmgr, where the identifier `api` already means containerd's NRI api.
+type Snapshot = api.Snapshot
+
 // CollectFn returns a fresh snapshot. It must be safe to call from an HTTP
 // handler goroutine; the resource manager's implementation takes its read
 // lock.
-type CollectFn func() *api.Snapshot
+type CollectFn func() *Snapshot
 
 // Server serves the introspection interface.
 //
@@ -3043,10 +3096,14 @@ Add to the `resmgr` struct, after the `dra` field:
 Add the imports:
 
 ```go
-	"github.com/containers/nri-plugins/pkg/introspect/api"
 	"github.com/containers/nri-plugins/pkg/resmgr/introspect"
 	cfgintr "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/instrumentation"
 ```
+
+`pkg/introspect/api` is deliberately **not** imported here: in this package the
+identifier `api` already means containerd's NRI api (see `nri.go`), so the
+`introspect.Snapshot` alias is used instead. `system` and `version` are needed
+too, if not already imported.
 
 Add these methods next to `setupHealthCheck()`:
 
@@ -3076,20 +3133,23 @@ func (m *resmgr) configureIntrospection(cfg *cfgintr.Config) {
 // avoid collecting halfway through an allocation. A request can therefore
 // block behind a long allocation, which is acceptable for a read-only
 // inspection interface.
-func (m *resmgr) collectIntrospection() *api.Snapshot {
+func (m *resmgr) collectIntrospection() *introspect.Snapshot {
 	m.RLock()
 	defer m.RUnlock()
 
-	policyName := ""
+	var (
+		policyName string
+		sys        system.System
+	)
 	if m.policy != nil {
-		policyName = m.policy.ActivePolicy()
+		policyName, sys = m.policy.ActivePolicy(), m.policy.System()
 	}
 
 	return introspect.Collect(&introspect.Input{
 		NodeName: m.agent.NodeName(),
 		Policy:   policyName,
 		Version:  version.Version,
-		System:   m.policy.System(),
+		System:   sys,
 		Cache:    introspect.CacheOf(m.cache),
 		Config:   m.cfg,
 	})
