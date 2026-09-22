@@ -175,8 +175,7 @@ func (m *resmgr) updateConfig(newCfg any) (bool, error) {
 	log.InfoBlock("  <updated config> ", "%s", dump)
 
 	reconfErr := m.reconfigure(cfg)
-	m.updateTopologyZones()
-	m.updateNodeExtendedResources()
+	m.publishNodeState()
 	return false, reconfErr
 }
 
@@ -409,6 +408,20 @@ func (m *resmgr) updateNodeExtendedResources() {
 	resources := m.policy.GetExtendedResources()
 	if err := m.agent.UpdateNodeExtendedResources(resources); err != nil {
 		log.Errorf("failed to update node extended resources: %v", err)
+	}
+}
+
+// publishNodeState publishes our state to everything that consumes it.
+//
+// Call this wherever resource assignments may have changed. Keeping the
+// publishers together means a new one cannot be forgotten at one of the
+// call sites.
+func (m *resmgr) publishNodeState() {
+	m.updateTopologyZones()
+	m.updateNodeExtendedResources()
+
+	if m.introspect != nil {
+		m.introspect.Invalidate()
 	}
 }
 
