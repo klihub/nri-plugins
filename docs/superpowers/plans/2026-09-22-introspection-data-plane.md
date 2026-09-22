@@ -4243,36 +4243,50 @@ verify-introspect-jq() { # script API
     # Wait until the introspection snapshot of the plugin satisfies
     # JQ-FILTER, that is, until the filter outputs "true". Fail the test on
     # timeout, 10s by default.
+    #
+    # The filter is interpolated into single quotes, so it must not contain
+    # one itself.
     local filter="$1"
-    vm-run-until --timeout "${2:-10}" "echo 'waiting for introspection: $filter' >&2; curl --silent --noproxy localhost $verify_introspect_url | jq -e '$filter' >/dev/null" || {
+    # The wait runs in a subshell because vm-run-until exits the script on
+    # timeout, which would skip the snapshot dump below — and that dump is
+    # the only thing that makes a failed filter diagnosable.
+    ( vm-run-until --timeout "${2:-10}" "echo 'waiting for introspection: $filter' >&2; curl --silent --noproxy localhost $verify_introspect_url | jq -e '$filter' >/dev/null" ) || {
         vm-command "curl --silent --noproxy localhost $verify_introspect_url | jq ."
         command-error "introspection snapshot does not satisfy '$filter'"
     }
 }
 
 verify-introspect-disabled() { # script API
-    # Usage: verify-introspect-disabled
+    # Usage: verify-introspect-disabled [TIMEOUT]
     #
     # Verify that the introspection endpoint is not served at all.
-    vm-command "curl --silent --show-error --output /dev/null --write-out '%{http_code}' --noproxy localhost $verify_introspect_url" || true
-    if [ "$COMMAND_OUTPUT" != "404" ]; then
-        command-error "expected HTTP 404 from $verify_introspect_url, got '$COMMAND_OUTPUT'"
-    fi
+    #
+    # This retries rather than checking once, because helm-launch starts the
+    # port-forward in the background and returns immediately. A connection
+    # to a port nothing is listening on yet gives curl's '000', which never
+    # satisfies the check, so a premature first attempt times out here
+    # instead of failing the test for the wrong reason.
+    vm-run-until --timeout "${1:-10}" "test \$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --noproxy localhost $verify_introspect_url) = 404" || {
+        command-error "expected HTTP 404 from $verify_introspect_url"
+    }
 }
 ```
 
-Confirm the variable holding a command's output really is `COMMAND_OUTPUT`:
+Both helpers go through `vm-run-until`, like the `verify-metrics-*` pair
+immediately above them, so neither reads `COMMAND_OUTPUT`. Confirm the
+functions they do use exist with these signatures:
 
-Run: `grep -n 'COMMAND_OUTPUT' test/e2e/lib/*.bash | head`
+Run: `grep -n '^vm-run-until\|^vm-command\|^command-error' test/e2e/lib/*.bash`
 
-If the framework names it differently, use that name. Do not invent one.
+Expected: `vm-run-until` and `vm-command` in `vm.bash`, `command-error` in
+`command.bash`.
 
-Also confirm `jq` is available in the test VM:
+`jq` and `curl` are provisioned as common packages — confirm rather than assume:
 
-Run: `grep -rn 'jq' test/e2e/lib/vm.bash | head`
+Run: `grep -n 'jq\|curl' test/e2e/playbook/provision.yaml | head`
 
-If it is not installed, add the installation to the VM provisioning the same way
-other tools are added there, in this task.
+Expected: both appear in the installed package list. If `jq` is absent, add it
+there in this task.
 
 - [ ] **Step 2: Add the configuration knob to the e2e template**
 
@@ -4319,30 +4333,44 @@ verify-introspect-jq '(.hardware.cpus | map(.id) | unique | length) == 16'
 # The effective configuration travels with it. The concrete configuration
 # type is the whole custom resource, so its spec is one level down.
 verify-introspect-jq '.config.data.spec.pinCPU == true'
-verify-introspect-jq '.config.name != ""'
+# Note the // "" on every optional string: these fields are omitempty, so
+# the failure case is a missing key, and jq's null != "" is true. Without
+# the fallback the assertion would pass exactly when it should fail.
+verify-introspect-jq '(.config.name // "") != ""'
 
 # A guaranteed pod shows up with its applied cpuset, and the CPUs it got
 # are fully committed.
 CPU=2 MEM=100M create guaranteed
 report allowed
 
-verify-introspect-jq '[.containers[] | select(.name == "pod0c0")] | length == 1'
-verify-introspect-jq '[.containers[] | select(.name == "pod0c0")][0].cpuRequest == 2000'
-verify-introspect-jq '[.containers[] | select(.name == "pod0c0")][0].applied.cpusetCpus != ""'
+verify-introspect-jq '[.containers[]? | select(.name == "pod0c0")] | length == 1'
+verify-introspect-jq '[.containers[]? | select(.name == "pod0c0")][0].cpuRequest == 2000'
+verify-introspect-jq '
+    ([.containers[]? | select(.name == "pod0c0")][0].applied.cpusetCpus // "") != ""
+    '
 verify-introspect-jq '
     [.derived.cpuCommitment | to_entries[] | select(.value == 1000)] | length == 2
     ' 15
 
-# The pod's container is gone from the snapshot once it is deleted.
-kubectl delete pods pod0 --now --ignore-not-found
-verify-introspect-jq '[.containers[] | select(.name == "pod0c0")] | length == 0'
+# The pod's container is gone from the snapshot once it is deleted. Note
+# that kubectl runs in the VM: a bare kubectl here would talk to whatever
+# cluster the host happens to point at, and --ignore-not-found would make
+# that look like success.
+vm-command "kubectl delete pods pod0 --now"
+verify-introspect-jq '[.containers[]? | select(.name == "pod0c0")] | length == 0'
 
-# Commitment is reported honestly when a container is oversubscribed on
-# the CPUs it is allowed to use.
-CPU=1 MEM=100M CPUREQ=1 CPULIM=1 create burstable
+# A burstable container is tracked too, with its request and the shared
+# cpuset it landed on. The variables are the ones burstable.yaml.in reads —
+# CPU and MEM are silently ignored by that template.
+CPUREQ=1 CPULIM=2 MEMREQ=100M MEMLIM=200M create burstable
 report allowed
-verify-introspect-jq '(.derived.cpuCommitment | to_entries | map(.value) | add) > 0'
 
+verify-introspect-jq '
+    [.containers[]? | select(.name == "pod1c0")][0] as $c
+    | $c.cpuRequest == 1000 and ($c.applied.cpusetCpus // "") != ""
+    ' 15
+
+vm-command "kubectl delete pods --all --now"
 helm-terminate
 ```
 
@@ -4353,19 +4381,11 @@ specific CPU ids would duplicate what `report allowed` and the other
 topology-aware tests already assert, and would break whenever pool selection
 changes.
 
-- [ ] **Step 4: Run the e2e case**
-
-Run: `cd test/e2e && ./run_tests.sh policies.test-suite/topology-aware/n4c16/test42-introspection`
-
-Expected: PASS. Check the exact invocation the suite expects first with
-`sed -n '1,40p' test/e2e/run_tests.sh`; the e2e framework needs a VM and takes
-several minutes on a cold start.
-
-If a VM is unavailable in this environment, say so explicitly rather than
-marking this step done, and verify by hand instead: build the plugin, run it
-against a local configuration with introspection enabled, and
-`curl localhost:8891/introspect | jq .` to confirm the four `hardware`
-assertions and the `config.data` assertion by eye.
+There is deliberately no oversubscription assertion. A burstable container
+requesting one CPU from a shared pool of a dozen is not oversubscribed, and a
+filter summing all commitment and checking it exceeds zero would pass before
+the container was ever created — a green assertion that means nothing is worse
+than none.
 
 - [ ] **Step 5: Document the knob**
 
