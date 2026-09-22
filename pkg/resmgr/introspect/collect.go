@@ -97,7 +97,11 @@ func collectHardware(sys system.System) *api.Hardware {
 			n.Package, n.Die = &pkgID, &dieID
 		}
 		if info, err := node.MemoryInfo(); err != nil || info == nil {
-			log.Warnf("no memory info for NUMA node %d: %v", id, err)
+			// Debug rather than warn: this is one line per NUMA node per
+			// HTTP request, and a node whose meminfo cannot be read is a
+			// persistent condition, so warning here would let a remote
+			// caller drive an unbounded log stream. See parseSet().
+			log.Debugf("no memory info for NUMA node %d: %v", id, err)
 		} else {
 			n.Capacity = int64(info.MemTotal)
 		}
@@ -286,8 +290,25 @@ func collectWorkloads(c Cache) ([]*api.Pod, []*api.Container) {
 	return pods, containers
 }
 
-// containerState turns an NRI container state into a short lower-case name.
+// containerState turns a cached container's state into a short lower-case
+// name.
+//
+// The cache defines two states of its own outside the NRI enum, Creating
+// (UNKNOWN-1) and Stale (STOPPED+1), and both reach a snapshot: a container
+// whose allocation failed in CreateContainer is marked Stale and stays in
+// the cache until a later RemoveContainer, and a cache persisted mid-create
+// reloads as Creating. protobuf's generated String() renders a value with no
+// descriptor as its decimal number, so leaving these to the enum would emit
+// "-1" and "5" in a field documented to hold a name. They are named here
+// instead.
 func containerState(state nri.ContainerState) string {
+	switch state {
+	case cache.ContainerStateCreating:
+		return "creating"
+	case cache.ContainerStateStale:
+		return "stale"
+	}
+
 	return strings.ToLower(strings.TrimPrefix(state.String(), "CONTAINER_"))
 }
 
@@ -434,7 +455,11 @@ func collectConfig(cfg cfgapi.ResmgrConfig) *api.Config {
 
 	data, err := json.Marshal(cfg)
 	if err != nil {
-		log.Warnf("failed to marshal effective configuration: %v", err)
+		// Debug rather than warn: this runs per HTTP request and a
+		// configuration that does not marshal is a persistent condition,
+		// so warning here would let a remote caller drive an unbounded
+		// log stream. See parseSet().
+		log.Debugf("failed to marshal effective configuration: %v", err)
 	} else {
 		c.Data = json.RawMessage(data)
 	}

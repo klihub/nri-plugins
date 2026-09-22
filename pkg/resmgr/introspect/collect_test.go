@@ -30,6 +30,7 @@ import (
 
 	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1"
 	"github.com/containers/nri-plugins/pkg/introspect/api"
+	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/topology"
 	"github.com/containers/nri-plugins/pkg/utils/cpuset"
@@ -403,6 +404,57 @@ func TestCollectWorkloads(t *testing.T) {
 		got.Hints[0].Sockets != "0" ||
 		!reflect.DeepEqual(got.Hints[0].IRQs, []int{128}) {
 		t.Errorf("unexpected first hint: %+v", got.Hints[0])
+	}
+}
+
+// TestContainerState checks that every state a cached container can be in
+// serializes as a name.
+//
+// The cache defines two states outside the NRI enum, Creating (UNKNOWN-1) and
+// Stale (STOPPED+1), and protobuf's generated String() renders a value with no
+// descriptor as its decimal number. Both are reachable — a failed allocation
+// in CreateContainer leaves a container Stale in the cache, and a cache saved
+// mid-create reloads it as Creating — so without explicit handling the wire
+// format would carry "state":"-1" and "state":"5".
+func TestContainerState(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		state    nri.ContainerState
+		expected string
+	}{
+		{name: "creating", state: cache.ContainerStateCreating, expected: "creating"},
+		{name: "stale", state: cache.ContainerStateStale, expected: "stale"},
+		{name: "unknown", state: cache.ContainerStateUnknown, expected: "unknown"},
+		{name: "created", state: cache.ContainerStateCreated, expected: "created"},
+		{name: "running", state: cache.ContainerStateRunning, expected: "running"},
+		{name: "exited", state: cache.ContainerStateExited, expected: "stopped"},
+		{
+			name:     "paused",
+			state:    nri.ContainerState_CONTAINER_PAUSED,
+			expected: "paused",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containerState(tc.state); got != tc.expected {
+				t.Errorf("state %v collected as %q, expected %q",
+					int32(tc.state), got, tc.expected)
+			}
+
+			// The whole point is what a consumer sees, so check the
+			// collected container too, not just the helper.
+			_, containers := collectWorkloads(&fakeCache{
+				containers: []Container{
+					&fakeContainer{id: "ctr0", state: tc.state},
+				},
+			})
+			if len(containers) != 1 {
+				t.Fatalf("expected 1 container, got %d", len(containers))
+			}
+			if containers[0].State != tc.expected {
+				t.Errorf("collected state %q, expected %q",
+					containers[0].State, tc.expected)
+			}
+		})
 	}
 }
 
