@@ -70,7 +70,8 @@ missing:
   offline CPUs, core kinds;
 - pods and containers: identity, QoS, requests and limits, topology hints, and
   what was *actually applied* to the container (`cpuset.cpus`, `cpuset.mems`,
-  CPU shares/quota/period, memory limit, class assignments).
+  CPU shares/quota/period, memory limit, class assignments);
+- the effective configuration the plugin is running with, as received.
 
 This drives a genuinely useful machine view, because the interesting relations
 are derivable from it alone:
@@ -127,6 +128,7 @@ type Snapshot struct {
     Generation uint64       `json:"generation"`
     Timestamp  time.Time    `json:"timestamp"`
     Node       Node         `json:"node"`
+    Config     *Config      `json:"config,omitempty"`
     Hardware   *Hardware    `json:"hardware"`
     Pods       []*Pod       `json:"pods"`
     Containers []*Container `json:"containers"`
@@ -139,6 +141,40 @@ type Node struct {
     Version string `json:"version,omitempty"` // plugin build version
 }
 ```
+
+### Effective configuration
+
+```go
+type Config struct {
+    Name            string          `json:"name,omitempty"`      // CR name
+    Namespace       string          `json:"namespace,omitempty"`
+    Generation      int64           `json:"generation,omitempty"`
+    ResourceVersion string          `json:"resourceVersion,omitempty"`
+    Data            json.RawMessage `json:"data,omitempty"`      // the config itself
+}
+```
+
+The resource manager already retains the effective configuration as
+`m.cfg cfgapi.ResmgrConfig`, and that interface embeds
+`metav1.ObjectMetaAccessor`, so name, namespace, generation and resource version
+are available without new plumbing. `Data` is the configuration marshalled as
+received — `json.RawMessage` rather than typed fields, which keeps
+`pkg/introspect/api` dependency-free and means a new policy configuration field
+shows up in the snapshot with no schema work at all.
+
+This is not only bug-report context. The visualizer reads specific keys it knows
+about to explain what it is showing, which turns several "the view looks broken"
+cases into answers:
+
+- `pinCPU` or `pinMemory` disabled means containers have no cpuset at all. The
+  map would otherwise be uniformly empty with no indication why; with the
+  configuration in hand it says so.
+- `reservedResources.cpu` explains which CPUs are held back.
+- `availableResources` explains why part of the machine is absent from every
+  pool.
+
+No field is redacted. Nothing in the current configuration types carries a
+credential, but if one is ever added, redaction belongs here.
 
 ### Hardware
 
@@ -557,6 +593,21 @@ report.
   new table rows flash — ring and opacity, so no hue is spent on change.
 - Filters and the map/table switch sit in one row above the view.
 
+### Configuration panel
+
+A collapsible panel shows the effective configuration as a read-only formatted
+tree, with the CR name and generation in the header so it is obvious which
+configuration produced what is on screen. Beyond that, the keys listed under
+"Effective configuration" above annotate the map itself — a disabled `pinCPU`
+turns an inexplicably empty map into a stated reason.
+
+### Rendering untrusted strings
+
+Pod names, namespaces, container names, annotations, zone attributes and the
+whole configuration blob are user-authored. The UI renders every value as text
+(`textContent`, or SVG text nodes) and never assembles markup from snapshot
+data. No `innerHTML` with anything that came off the wire.
+
 ### Accessibility and scale
 
 - Dark mode is a *selected* set of steps validated against the dark surface,
@@ -608,13 +659,15 @@ both.
 
 Each step is independently useful and independently reviewable.
 
-1. `pkg/introspect/api` types, the layer-1 collector, `GET /introspect`, the
-   config knob, CRD and Helm updates, golden and collector tests, and the e2e
-   case. Useful immediately via `curl | jq`.
+1. `pkg/introspect/api` types, the layer-1 collector including the effective
+   configuration, `GET /introspect`, the config knob, CRD and Helm updates,
+   golden and collector tests, and the e2e case. Useful immediately via
+   `curl | jq`.
 2. SSE `/introspect/events`, generation and dirty-flag bookkeeping, and the
    `publishNodeState()` tidy-up at the four invalidation sites.
-3. The layer-1 UI: machine map, commitment ramp, pinning, table view, hover,
-   dark mode, delta pulses, sample-snapshot development mode.
+3. The layer-1 UI: machine map, commitment ramp, pinning, table view,
+   configuration panel, hover, dark mode, delta pulses, sample-snapshot
+   development mode.
 4. Layer 2 on the Go side: the `Introspector` interface, implementations for
    topology-aware and balloons, and the missing `cpuset` zone attribute for
    topology-aware.
@@ -625,11 +678,8 @@ Each step is independently useful and independently reviewable.
 
 ## Open questions
 
-- Whether the snapshot should carry the plugin's effective configuration.
-  Useful context in a bug report, but it is a second schema to maintain and the
-  configuration is already retrievable as a CR. Left out for now.
 - Whether hugepages deserve first-class treatment in `NUMANode` and container
-  requests. The policies handle them; the initial view does not show them.
+  requests. The policies handle them; deliberately left out of this design.
 - This document lives under `docs/superpowers/` and is internal to how the work
   was designed. It can be moved or dropped before the branch is proposed
   upstream.
