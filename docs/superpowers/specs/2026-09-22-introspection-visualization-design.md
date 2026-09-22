@@ -84,11 +84,13 @@ are derivable from it alone:
 
 **Layer 2 — policy-provided.** An optional `policy` section in two tiers:
 
-- *Generically renderable*: `zones` (from the existing `GetTopologyZones()`)
-  and `assignments` (per container: zone, exclusive/shared/isolated cpusets,
-  CPU share, memory zone and types, free-form attributes). Any visualizer can
-  render these mechanically — a tree with bars, a key/value table, outlines
-  over the CPU grid — without knowing which policy produced them.
+- *Generically renderable*: `zones` (from the existing `GetTopologyZones()`),
+  `assignments` (per container: zone, exclusive/shared/isolated cpusets, CPU
+  share, memory zone and types, free-form attributes), and `notices` — the
+  policy's own explanations of its configuration's effect, as severity-tagged
+  strings. Any visualizer can render these mechanically — a tree with bars, a
+  key/value table, outlines over the CPU grid, a list of messages — without
+  knowing which policy produced them.
 - *Escape hatch*: an opaque `data` field of raw JSON, for structure only a
   policy-aware visualizer understands (the balloons CPU tree, for example).
   Generic visualizers ignore it by contract.
@@ -162,16 +164,25 @@ received — `json.RawMessage` rather than typed fields, which keeps
 `pkg/introspect/api` dependency-free and means a new policy configuration field
 shows up in the snapshot with no schema work at all.
 
-This is not only bug-report context. The visualizer reads specific keys it knows
-about to explain what it is showing, which turns several "the view looks broken"
-cases into answers:
+**A generic consumer does not interpret this blob.** Apart from `CommonConfig`,
+every key in it is policy-specific: `pinCPU` and `pinMemory` live in
+`topologyaware.Config` and in `balloons.Config` — and in the latter they are
+`*bool` per *balloon definition*, not a single node-wide switch.
+`reservedResources` and `availableResources` are per-policy too. A generic
+visualizer that keyed off such names would be encoding policy knowledge in the
+layer that is supposed to have none, and would be wrong for the next policy or
+even for the other current one. So layer 1 renders the configuration as an
+opaque read-only tree and reads nothing out of it.
 
-- `pinCPU` or `pinMemory` disabled means containers have no cpuset at all. The
-  map would otherwise be uniformly empty with no indication why; with the
-  configuration in hand it says so.
-- `reservedResources.cpu` explains which CPUs are held back.
-- `availableResources` explains why part of the machine is absent from every
-  pool.
+The explanatory value is real, though, and it is preserved from both sides:
+
+- **Generic observation.** Statements about the collected data need no
+  configuration at all. "No container on this node has an applied cpuset" is an
+  observation the UI can make and state plainly — policy-agnostic, and true
+  whenever it is true, whatever the reason.
+- **Policy-supplied explanation.** The *why* comes from the policy, which is the
+  only thing that can read its own configuration correctly. See `Notices` under
+  "Policy state".
 
 No field is redacted. Nothing in the current configuration types carries a
 credential, but if one is ever added, redaction belongs here.
@@ -310,8 +321,17 @@ type PolicyState struct {
     Name        string            `json:"name"`
     Zones       []*Zone           `json:"zones,omitempty"`
     Assignments []*Assignment     `json:"assignments,omitempty"`
+    Notices     []*Notice         `json:"notices,omitempty"`
     Attributes  map[string]string `json:"attributes,omitempty"`
     Data        json.RawMessage   `json:"data,omitempty"` // policy-specific, opaque
+}
+
+// Notice is a policy's own explanation of something a viewer would
+// otherwise have to guess at.
+type Notice struct {
+    Severity string `json:"severity"` // info, warning, error
+    Message  string `json:"message"`
+    Detail   string `json:"detail,omitempty"`
 }
 
 type Zone struct {
@@ -345,6 +365,16 @@ type Assignment struct {
     Attributes    map[string]string `json:"attributes,omitempty"`
 }
 ```
+
+`Notices` is how a policy explains its own configuration's effect on what the
+viewer is seeing, without any consumer having to parse policy-specific
+configuration keys: "CPU pinning is disabled (pinCPU: false)", or for balloons,
+"CPU pinning is disabled for balloon type `noisy` (pinCPU: false)" — a
+distinction a generic reader of the configuration blob could not even locate,
+since there the setting is per balloon definition. It is deliberately a list of
+severity-tagged strings rather than structured facts: any visualizer can render
+it without policy knowledge, and it maps onto the status palette, which is
+always drawn with an icon and a label and never colour alone.
 
 `Zone` is populated by converting the existing `policy.TopologyZone`:
 `resource.Quantity` becomes milli-CPU for `cpu` and bytes for everything else.
@@ -597,9 +627,14 @@ report.
 
 A collapsible panel shows the effective configuration as a read-only formatted
 tree, with the CR name and generation in the header so it is obvious which
-configuration produced what is on screen. Beyond that, the keys listed under
-"Effective configuration" above annotate the map itself — a disabled `pinCPU`
-turns an inexplicably empty map into a stated reason.
+configuration produced what is on screen. The panel does not interpret any key —
+it is a viewer, not a parser.
+
+Where the view would otherwise be inexplicable, the layer-1 UI states what it
+observes — "no container on this node has an applied cpuset, so no CPU placement
+is shown" — which needs no policy knowledge and ships in increment 3. The reason
+behind it arrives with layer 2, as policy `Notices` rendered verbatim beside the
+observation, and needs no consumer-side policy knowledge either.
 
 ### Rendering untrusted strings
 
@@ -621,9 +656,11 @@ data. No `innerHTML` with anything that came off the wire.
 ### Layer 2 in the UI
 
 Pool and balloon boundaries draw as labelled strokes over the grid; policy
-assignment adds columns to the table. Structure, not colour — so layer 2 cannot
-collide with the commitment ramp, and a snapshot without a `policy` section
-simply renders without outlines.
+assignment adds columns to the table; notices render as a list of
+severity-tagged messages with the status palette's icon-and-label pairing.
+Structure and text, not colour — so layer 2 cannot collide with the commitment
+ramp, and a snapshot without a `policy` section simply renders without outlines,
+without the extra columns and without messages.
 
 ### Stack
 
@@ -669,10 +706,10 @@ Each step is independently useful and independently reviewable.
    configuration panel, hover, dark mode, delta pulses, sample-snapshot
    development mode.
 4. Layer 2 on the Go side: the `Introspector` interface, implementations for
-   topology-aware and balloons, and the missing `cpuset` zone attribute for
-   topology-aware.
-5. Layer 2 in the UI: zone outlines over the grid and assignment columns in the
-   table.
+   topology-aware and balloons including their pinning notices, and the missing
+   `cpuset` zone attribute for topology-aware.
+5. Layer 2 in the UI: zone outlines over the grid, assignment columns in the
+   table, and the notices list.
 6. Documentation page under `docs/resource-policy/` with screenshots generated
    from the sample snapshot.
 
