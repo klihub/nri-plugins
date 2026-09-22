@@ -626,6 +626,17 @@ spec:
                       to expose Prometheus metrics among other things.
                     example: :8891
                     type: string
+                  introspection:
+                    description: |-
+                      Introspection controls the introspection interface, which serves a
+                      JSON description of how the active policy has placed containers on
+                      this node. It is disabled by default.
+                    properties:
+                      enabled:
+                        description: Enabled turns on the introspection endpoints
+                          on the HTTP server.
+                        type: boolean
+                    type: object
                   logExportPeriod:
                     description: |-
                       LogCollectPeriod is the time window between batched log exports. In

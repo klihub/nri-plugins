@@ -69,6 +69,8 @@ config:
     prometheusExport: false
     reportPeriod: 60s
     samplingRatePerMillion: 0
+    introspection:
+      enabled: false
 
 # configGroupLabel: config.nri/group
 

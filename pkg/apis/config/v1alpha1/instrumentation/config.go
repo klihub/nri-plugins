@@ -76,4 +76,26 @@ type Config struct {
 	// Metrics defines which metrics to collect.
 	// +kubebuilder:default={"enabled": {"policy", "buildinfo"}}
 	Metrics *metrics.Config `json:"metrics,omitempty"`
+	// Introspection controls the introspection interface, which serves a
+	// JSON description of how the active policy has placed containers on
+	// this node. It is disabled by default.
+	// +optional
+	Introspection *IntrospectionConfig `json:"introspection,omitempty"`
+}
+
+// IntrospectionConfig provides runtime configuration for the introspection
+// interface.
+// +kubebuilder:object:generate=true
+type IntrospectionConfig struct {
+	// Enabled turns on the introspection endpoints on the HTTP server.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+// IntrospectionEnabled returns whether the introspection interface is enabled.
+func (c *Config) IntrospectionEnabled() bool {
+	if c == nil || c.Introspection == nil {
+		return false
+	}
+	return c.Introspection.Enabled
 }
