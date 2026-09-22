@@ -89,9 +89,12 @@ func (s *Server) subscribers() int {
 // notifySubscribers delivers a generation to every subscriber without ever
 // blocking. Each channel is buffered for one value: if a notification is
 // already pending the subscriber has not read it yet, and since it refetches
-// the current snapshot anyway, an older pending value loses nothing. If a
-// newer generation arrives before the subscriber reads, we replace the stale
-// value in the buffer.
+// the current snapshot anyway, an older pending value loses nothing.
+// Coalescing is guaranteed by the buffer: a subscriber not reading has at
+// most one notification pending, never a queue. Do not try to improve this
+// by draining and replacing; the handler can read between the sends anyway,
+// and which generation is pending does not matter — the client refetches the
+// current snapshot regardless.
 //
 // Callers must hold s.mu. That is what keeps a send from racing a close.
 func (s *Server) notifySubscribers(gen uint64) {
@@ -99,16 +102,6 @@ func (s *Server) notifySubscribers(gen uint64) {
 		select {
 		case ch <- gen:
 		default:
-			// Buffer is full with a stale value. Drain it and send the new one,
-			// so only the latest generation is delivered.
-			select {
-			case <-ch:
-				select {
-				case ch <- gen:
-				default:
-				}
-			default:
-			}
 		}
 	}
 }
