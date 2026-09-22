@@ -20,10 +20,30 @@
 // Linux list-format strings, for instance "0-3,8".
 //
 // The Hardware, Pods, Containers, Config and Derived sections are
-// policy-agnostic: they are collected without any policy involvement and are
-// always present. The Policy section is optional and additive. Its absence
-// means the active policy has nothing to say, which is not an error, and no
-// policy-agnostic field is ever derived from it.
+// policy-agnostic: they are collected without any policy involvement, so none
+// of them is ever absent because a policy declined to participate. That is not
+// the same as always present. All five are omitempty, and two of them are
+// genuinely absent in normal operation: a node with no pods has neither a
+// "pods" nor a "containers" key, and "config" is absent whenever there is no
+// effective configuration to report. The Policy section is optional and
+// additive in a different sense: its absence means the active policy has
+// nothing to say, which is not an error, and no policy-agnostic field is ever
+// derived from it.
+//
+// Absence means empty throughout this format, and a consumer must treat it so:
+// a missing section is an empty section, a missing array an empty array, a
+// missing map an empty map, a missing string "", and a missing number 0.
+// Nothing is ever omitted to mean "unknown". The exception is a pointer to a
+// scalar, of which this format has exactly two: NUMANode.Package and
+// NUMANode.Die are absent when the node belongs to no package or die at all,
+// which is not the same as belonging to package 0, and that is why they are
+// pointers rather than plain ints.
+//
+// A boolean is always emitted where false is the notable state — CPU.Online,
+// NUMANode.NormalMemory — so that a reader never has to tell an offline CPU or
+// a node without normal memory from a key that was merely dropped. It is
+// omitempty where false is the unremarkable norm, as with CPU.Isolated, whose
+// set is in any case reported whole as Hardware.IsolatedCPUs.
 //
 // This package deliberately depends on the standard library only, so that
 // external consumers can use it without pulling in the resource manager or
@@ -151,6 +171,12 @@ type Pod struct {
 // The request and limit fields are what Kubernetes asked for. Applied is
 // what actually reached the container. They can disagree, and that
 // disagreement is usually the interesting part.
+//
+// State is one of "creating", "unknown", "created", "paused", "running",
+// "stopped" or "stale". The first and last are not runtime states: "creating"
+// is a container the plugin is in the middle of admitting, and "stale" is one
+// whose admission failed and which has not been removed yet. A consumer that
+// switches on this should still have a default branch, since the set can grow.
 type Container struct {
 	ID       string `json:"id"`
 	PodID    string `json:"podId"`
@@ -198,6 +224,16 @@ type Hint struct {
 // truncates, so a commitment total can be up to one milli-CPU per CPU below
 // the exact figure. Every CPU and NUMA node in Hardware has an entry, so a
 // consumer needs no missing-key fallback.
+//
+// Only what was actually applied counts. A container with no applied cpuset
+// contributes to neither CPUCommitment nor CPUSharers, and one with no applied
+// cpuset.mems contributes to no MemoryCommitment, because there is no set to
+// spread its request over. On a node running with CPU pinning disabled that
+// means every CPU reports zero commitment and zero sharers however busy the
+// node is. Zero here means "nothing is pinned", not "nothing is running": a
+// consumer must read it against Containers rather than as an idle node. IDs
+// named by a set but absent from Hardware are ignored, so a commitment total
+// can also fall short of the requests it came from for that reason.
 type Derived struct {
 	CPUCommitment    map[int]int64 `json:"cpuCommitment,omitempty"`    // cpu id -> milli-CPU
 	CPUSharers       map[int]int   `json:"cpuSharers,omitempty"`       // cpu id -> containers allowed
