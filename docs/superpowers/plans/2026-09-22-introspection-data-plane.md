@@ -3505,6 +3505,46 @@ func TestServeEvents(t *testing.T) {
 	}
 }
 
+// TestDisableTerminatesLiveStream is what the wake-before-unregister ordering
+// in Disable() actually buys. Since pkg/http no longer holds a lock across a
+// handler, unregistering does not interrupt a stream and the server's write
+// lock does not either: closing the subscriber channels is the only thing
+// that ends it. So a live stream must be gone by the time Disable() returns.
+func TestDisableTerminatesLiveStream(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+	s.Enable()
+
+	served := make(chan struct{})
+	go func() {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/introspect/events", nil))
+		close(served)
+	}()
+
+	for i := 0; i < 200; i++ {
+		if s.subscribers() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s.subscribers() != 1 {
+		t.Fatalf("expected 1 subscriber, got %d", s.subscribers())
+	}
+
+	s.Disable()
+
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream outlived Disable()")
+	}
+
+	if s.subscribers() != 0 {
+		t.Errorf("subscriber not cleaned up: %d remain", s.subscribers())
+	}
+}
+
 func TestEventSubscriberLimit(t *testing.T) {
 	mux := xhttp.NewServeMux()
 	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
@@ -3778,7 +3818,38 @@ func (m *resmgr) publishNodeState() {
 takes only the server's own mutex, briefly, and never collects. See the comment
 on `Invalidate()` and `TestInvalidateDoesNotBlockOnCollect`.
 
-- [ ] **Step 2: Replace the four call sites**
+- [ ] **Step 2: Give `Synchronize` the lock every other NRI handler takes**
+
+`nriPlugin.Synchronize()` in `pkg/resmgr/nri.go` is the one NRI handler that
+does **not** take `m.Lock()`, and it mutates shared state: `syncWithNRI`,
+`UpdateState` on cached containers, then `m.policy.Sync()`.
+
+That matters beyond tidiness. `stub.Start()` returns as soon as NRI's
+*Configure* RPC has been answered; `Synchronize` arrives afterwards as a
+separate RPC on the ttrpc server goroutine. So it can still be running when
+`start()` finishes and registers the introspection endpoint, and a request
+landing in that window reads the cache's pod and container maps — which have no
+mutex of their own — while `Synchronize` writes them. That is a
+"concurrent map iteration and map write" runtime throw, which kills the plugin.
+Task 7 shrank the window from all of `start()` to the tail of it; this closes it.
+
+Add at the top of the function's body, matching the other handlers:
+
+```go
+	m.Lock()
+	defer m.Unlock()
+```
+
+None of `syncWithNRI`, `m.policy.Sync()`, `updateTopologyZones()` or
+`updateNodeExtendedResources()` takes `m.Lock()` itself, so there is no
+re-entrancy to worry about.
+
+Run: `grep -n 'm.Lock()' pkg/resmgr/nri.go | head -3`
+
+Expected: the first hit is now inside `Synchronize`, before the pre-existing
+ones.
+
+- [ ] **Step 3: Replace the four call sites**
 
 At each of the four sites, replace the pair
 
@@ -3798,13 +3869,13 @@ Run: `grep -rn 'updateTopologyZones()\|updateNodeExtendedResources()' pkg/resmgr
 Expected: each appears exactly twice — once as its own declaration and once
 inside `publishNodeState()`. Anything else is a site you missed.
 
-- [ ] **Step 3: Verify it builds and the suite still passes**
+- [ ] **Step 4: Verify it builds and the suite still passes**
 
 Run: `go build ./... && go test ./pkg/resmgr/... -race`
 
 Expected: success.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 gofmt -l pkg/resmgr/
