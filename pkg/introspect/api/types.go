@@ -104,10 +104,15 @@ type Cluster struct {
 }
 
 // NUMANode is a NUMA node. A node with no CPUs is a memory-only node.
+//
+// Package and Die are absent for a node that belongs to neither, which is
+// the normal case for memory-only CXL and HBM nodes. They are pointers
+// rather than an int with a sentinel value because 0 is a valid package
+// and die ID, and because absence is self-describing on the wire.
 type NUMANode struct {
 	ID           int    `json:"id"`
-	Package      int    `json:"package"`
-	Die          int    `json:"die"`
+	Package      *int   `json:"package,omitempty"`
+	Die          *int   `json:"die,omitempty"`
 	CPUs         string `json:"cpus"`
 	MemoryType   string `json:"memoryType"`
 	NormalMemory bool   `json:"normalMemory"`
@@ -164,6 +169,9 @@ type Container struct {
 }
 
 // Applied is what was actually applied to a container.
+//
+// The Cpuset field names mirror the cgroup filenames they come from, which
+// is why they are not spelled with the CPU acronym like their neighbours.
 type Applied struct {
 	CpusetCpus  string `json:"cpusetCpus,omitempty"`
 	CpusetMems  string `json:"cpusetMems,omitempty"`

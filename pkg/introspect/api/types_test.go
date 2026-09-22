@@ -24,12 +24,17 @@ import (
 	"github.com/containers/nri-plugins/pkg/introspect/api"
 )
 
+// intp returns a pointer to an int, for the optional NUMA node fields.
+func intp(i int) *int {
+	return &i
+}
+
 // populated returns a snapshot with every field set, so that a renamed
 // or dropped JSON tag shows up as a key-set mismatch below.
 //
-// Three fields are left at their zero value on purpose, so that the
-// expected key sets also prove omitempty works: CPU.Isolated,
-// Hardware.OfflineCPUs and Assignment.SharedCPUs and its neighbours.
+// Six fields are left at their zero value on purpose, so that the expected
+// key sets also prove omitempty works: Hardware.OfflineCPUs, CPU.Isolated,
+// and Assignment's SharedCPUs, IsolatedCPUs, ReservedCPUs and CPUShare.
 func populated() *api.Snapshot {
 	return &api.Snapshot{
 		Version:    api.Version,
@@ -65,8 +70,8 @@ func populated() *api.Snapshot {
 			NUMANodes: []*api.NUMANode{
 				{
 					ID:           0,
-					Package:      0,
-					Die:          0,
+					Package:      intp(0),
+					Die:          intp(0),
 					CPUs:         "0-7",
 					MemoryType:   "DRAM",
 					NormalMemory: true,
@@ -347,6 +352,26 @@ func TestSnapshotJSONKeys(t *testing.T) {
 					got, tc.expected)
 			}
 		})
+	}
+}
+
+// TestMemoryOnlyNUMANodeKeys pins the case the optional Package and Die
+// fields exist for: a memory-only CXL or HBM node belongs to no package,
+// and must not claim to belong to package 0.
+func TestMemoryOnlyNUMANodeKeys(t *testing.T) {
+	node := &api.NUMANode{
+		ID:         8,
+		CPUs:       "",
+		MemoryType: "HBM",
+		Capacity:   68719476736,
+	}
+
+	got := keys(t, node)
+	expected := []string{"capacity", "cpus", "id", "memoryType", "normalMemory"}
+
+	if !reflect.DeepEqual(got, expected) {
+		t.Errorf("JSON keys mismatch\n  got:      %v\n  expected: %v",
+			got, expected)
 	}
 }
 
