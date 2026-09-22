@@ -15,16 +15,20 @@
 package introspect
 
 import (
+	"encoding/json"
 	"os"
 	"path"
 	"reflect"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	nri "github.com/containerd/nri/pkg/api"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1"
 	"github.com/containers/nri-plugins/pkg/introspect/api"
 	"github.com/containers/nri-plugins/pkg/sysfs"
 	"github.com/containers/nri-plugins/pkg/topology"
@@ -642,5 +646,123 @@ func TestDeriveWithoutHardware(t *testing.T) {
 	if len(d.CPUCommitment) != 0 || len(d.CPUSharers) != 0 ||
 		len(d.MemoryCommitment) != 0 {
 		t.Errorf("expected empty maps without hardware, got %+v", d)
+	}
+}
+
+// fakeConfig is a minimal cfgapi.ResmgrConfig. It is shaped like the real
+// thing: the concrete configuration types are whole custom resources, such
+// as *cfgapi.TopologyAwarePolicy, so a marshalled configuration has
+// metadata and spec sections rather than bare policy fields.
+type fakeConfig struct {
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              fakeSpec `json:"spec"`
+}
+
+type fakeSpec struct {
+	Pin bool `json:"pinCPU"`
+}
+
+func (c *fakeConfig) GetObjectMeta() metav1.Object     { return &c.ObjectMeta }
+func (c *fakeConfig) AgentConfig() *cfgapi.AgentConfig { return nil }
+func (c *fakeConfig) CommonConfig() *cfgapi.CommonConfig {
+	return &cfgapi.CommonConfig{}
+}
+func (c *fakeConfig) PolicyConfig() any { return nil }
+
+func TestCollect(t *testing.T) {
+	sys := discover(t, "sample1")
+
+	in := &Input{
+		NodeName: "worker-1",
+		Policy:   "topology-aware",
+		Version:  "v0.0.0-test",
+		System:   sys,
+		Cache: &fakeCache{
+			pods: []Pod{
+				&fakePod{id: "pod0", uid: "uid0", name: "web",
+					namespace: "default", qos: v1.PodQOSGuaranteed},
+			},
+			containers: []Container{
+				&fakeContainer{
+					id: "ctr0", podID: "pod0", name: "nginx",
+					state:        nri.ContainerState_CONTAINER_RUNNING,
+					requirements: requirements("2", "2", "1Gi", "1Gi"),
+					cpusetCpus:   "0-1",
+					cpusetMems:   "0",
+				},
+			},
+		},
+		Config: &fakeConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "node.worker-1",
+				Namespace:       "kube-system",
+				Generation:      7,
+				ResourceVersion: "12345",
+			},
+			Spec: fakeSpec{Pin: true},
+		},
+	}
+
+	snap := Collect(in)
+
+	if snap.Version != api.Version {
+		t.Errorf("version %q, expected %q", snap.Version, api.Version)
+	}
+	if snap.Timestamp.IsZero() {
+		t.Error("timestamp not set")
+	}
+	if snap.Generation != 0 {
+		t.Errorf("generation %d, expected 0: the server stamps it",
+			snap.Generation)
+	}
+	if snap.Node.Name != "worker-1" || snap.Node.Policy != "topology-aware" ||
+		snap.Node.Version != "v0.0.0-test" {
+		t.Errorf("unexpected node: %+v", snap.Node)
+	}
+	if snap.Hardware == nil || len(snap.Hardware.CPUs) != 16 {
+		t.Errorf("unexpected hardware: %+v", snap.Hardware)
+	}
+	if len(snap.Pods) != 1 || len(snap.Containers) != 1 {
+		t.Errorf("expected 1 pod and 1 container, got %d and %d",
+			len(snap.Pods), len(snap.Containers))
+	}
+	if snap.Derived == nil || snap.Derived.CPUCommitment[0] != 1000 {
+		t.Errorf("unexpected derived section: %+v", snap.Derived)
+	}
+	if snap.Policy != nil {
+		t.Errorf("policy section must stay empty for now: %+v", snap.Policy)
+	}
+
+	if snap.Config == nil {
+		t.Fatal("config section missing")
+	}
+	if snap.Config.Name != "node.worker-1" ||
+		snap.Config.Namespace != "kube-system" ||
+		snap.Config.Generation != 7 ||
+		snap.Config.ResourceVersion != "12345" {
+		t.Errorf("unexpected config metadata: %+v", snap.Config)
+	}
+	if !strings.Contains(string(snap.Config.Data), `"spec":{"pinCPU":true}`) {
+		t.Errorf("config data does not carry the configuration: %s",
+			snap.Config.Data)
+	}
+
+	// A snapshot must marshal, since that is all the server does with it.
+	if _, err := json.Marshal(snap); err != nil {
+		t.Errorf("failed to marshal snapshot: %v", err)
+	}
+}
+
+func TestCollectWithoutConfig(t *testing.T) {
+	snap := Collect(&Input{NodeName: "worker-1", Policy: "none"})
+
+	if snap.Config != nil {
+		t.Errorf("expected no config section, got %+v", snap.Config)
+	}
+	if snap.Hardware != nil {
+		t.Errorf("expected no hardware section, got %+v", snap.Hardware)
+	}
+	if snap.Derived == nil {
+		t.Error("derived section should still be present")
 	}
 }

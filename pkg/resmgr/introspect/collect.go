@@ -15,12 +15,15 @@
 package introspect
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 
 	nri "github.com/containerd/nri/pkg/api"
 	v1 "k8s.io/api/core/v1"
 
+	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1"
 	"github.com/containers/nri-plugins/pkg/introspect/api"
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
@@ -374,4 +377,67 @@ func parseSet(value, what, id string) []int {
 	}
 
 	return set.List()
+}
+
+// Input is everything Collect needs. The caller is responsible for making
+// sure the state behind it is not being mutated concurrently; the resource
+// manager does that by collecting under its read lock.
+type Input struct {
+	NodeName string
+	Policy   string
+	Version  string
+	System   system.System
+	Cache    Cache
+	Config   cfgapi.ResmgrConfig
+}
+
+// Collect builds a snapshot. The Generation field is left at zero for the
+// server to stamp, since only the server knows it.
+func Collect(in *Input) *api.Snapshot {
+	snap := &api.Snapshot{
+		Version:   api.Version,
+		Timestamp: time.Now(),
+		Node: api.Node{
+			Name:    in.NodeName,
+			Policy:  in.Policy,
+			Version: in.Version,
+		},
+		Config:   collectConfig(in.Config),
+		Hardware: collectHardware(in.System),
+	}
+
+	snap.Pods, snap.Containers = collectWorkloads(in.Cache)
+	snap.Derived = derive(snap.Hardware, snap.Containers)
+
+	return snap
+}
+
+// collectConfig describes the effective configuration.
+//
+// Data is the configuration as received. Apart from its common section its
+// keys are policy-specific, so it is carried verbatim rather than
+// interpreted: a consumer that is not itself policy-specific should display
+// it, not parse it.
+func collectConfig(cfg cfgapi.ResmgrConfig) *api.Config {
+	if cfg == nil {
+		return nil
+	}
+
+	c := &api.Config{}
+
+	if meta := cfg.GetObjectMeta(); meta != nil {
+		c.Name = meta.GetName()
+		c.Namespace = meta.GetNamespace()
+		c.Generation = meta.GetGeneration()
+		c.ResourceVersion = meta.GetResourceVersion()
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		log.Warnf("failed to marshal effective configuration: %v", err)
+	} else {
+		c.Data = json.RawMessage(data)
+	}
+
+	return c
 }
