@@ -15,11 +15,13 @@
 package introspect
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -298,7 +300,7 @@ func TestServeEvents(t *testing.T) {
 	defer cancel()
 	req = req.WithContext(ctx)
 
-	w := httptest.NewRecorder()
+	w := newSyncRecorder()
 
 	served := make(chan struct{})
 	go func() {
@@ -320,8 +322,11 @@ func TestServeEvents(t *testing.T) {
 	s.Invalidate()
 	s.Invalidate()
 
-	// Give the handler a moment to write, then shut it down.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for a record to be written rather than sleeping. After cancel()
+	// both select arms are ready and Go picks between them at random, so
+	// cancelling on a timer loses the event about half the time — a flake,
+	// not a slow machine.
+	w.waitForWrite(t)
 	cancel()
 
 	select {
@@ -334,9 +339,20 @@ func TestServeEvents(t *testing.T) {
 		t.Errorf("content type %q, expected text/event-stream", ct)
 	}
 
-	body := w.Body.String()
+	body := w.body()
 	if !strings.Contains(body, "data: {\"generation\":") {
 		t.Errorf("no generation event in the stream:\n%s", body)
+	}
+
+	// Coalescing: two invalidations arriving before the subscriber reads
+	// must collapse into one record carrying the newer generation. Without
+	// this the test would pass just as well with a 64-deep buffer, and the
+	// design treats coalescing as a goal rather than an optimisation.
+	if n := strings.Count(body, "data: "); n != 1 {
+		t.Errorf("expected 1 coalesced record, got %d:\n%s", n, body)
+	}
+	if !strings.Contains(body, `data: {"generation":3}`) {
+		t.Errorf("record does not carry the latest generation:\n%s", body)
 	}
 
 	if s.subscribers() != 0 {
@@ -344,11 +360,134 @@ func TestServeEvents(t *testing.T) {
 	}
 }
 
-// TestDisableTerminatesLiveStream is what the wake-before-unregister ordering
-// in Disable() actually buys. Since pkg/http no longer holds a lock across a
-// handler, unregistering does not interrupt a stream and the server's write
-// lock does not either: closing the subscriber channels is the only thing
-// that ends it. So a live stream must be gone by the time Disable() returns.
+// syncRecorder is an http.ResponseWriter a test can read while the handler
+// is still writing. httptest.ResponseRecorder cannot be read safely until
+// the handler has returned, which is useless for a stream that only ends
+// when the test says so.
+type syncRecorder struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	hdr     http.Header
+	code    int
+	written chan struct{}
+}
+
+func newSyncRecorder() *syncRecorder {
+	return &syncRecorder{
+		hdr:     http.Header{},
+		written: make(chan struct{}, 1),
+	}
+}
+
+func (r *syncRecorder) Header() http.Header { return r.hdr }
+
+func (r *syncRecorder) WriteHeader(code int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.code = code
+}
+
+func (r *syncRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	n, err := r.buf.Write(p)
+	r.mu.Unlock()
+
+	select {
+	case r.written <- struct{}{}:
+	default:
+	}
+
+	return n, err
+}
+
+func (r *syncRecorder) Flush() {}
+
+func (r *syncRecorder) body() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.buf.String()
+}
+
+// waitForWrite blocks until the handler has written something.
+func (r *syncRecorder) waitForWrite(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-r.written:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler wrote nothing")
+	}
+}
+
+// TestEventsHeartbeat proves the idle-stream heartbeat, which is what keeps
+// kubectl port-forward and intervening proxies from reaping a connection.
+// The interval is shortened so the test does not wait half a minute.
+func TestEventsHeartbeat(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+	s.heartbeat = 10 * time.Millisecond
+	s.Enable()
+
+	req := httptest.NewRequest(http.MethodGet, "/introspect/events", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	w := newSyncRecorder()
+
+	served := make(chan struct{})
+	go func() {
+		mux.ServeHTTP(w, req)
+		close(served)
+	}()
+
+	// No invalidation here, so the only thing that can be written is a
+	// heartbeat.
+	w.waitForWrite(t)
+	cancel()
+
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after the request was cancelled")
+	}
+
+	if body := w.body(); !strings.Contains(body, ": heartbeat\n\n") {
+		t.Errorf("no heartbeat comment in the stream:\n%q", body)
+	}
+}
+
+// TestSubscribeRejectedWhenDisabled covers the window pkg/http leaves open:
+// it dispatches with its lock released and Unregister does not wait for
+// requests in flight, so a request admitted just before Disable() reaches
+// its handler afterwards. It must not become a subscriber nobody will ever
+// close.
+func TestSubscribeRejectedWhenDisabled(t *testing.T) {
+	mux := xhttp.NewServeMux()
+	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })
+
+	s.Enable()
+	s.Disable()
+
+	if _, ok := s.subscribe(); ok {
+		t.Error("subscribing succeeded while disabled")
+	}
+	if s.subscribers() != 0 {
+		t.Errorf("a disabled server has %d subscribers", s.subscribers())
+	}
+}
+
+// TestDisableTerminatesLiveStream pins that closing the subscriber channels
+// is what ends a stream: since pkg/http no longer holds a lock across a
+// handler, neither unregistering nor the server's write lock interrupts one.
+//
+// It does not pin the close-before-unregister *ordering* — Unregister never
+// waits for requests in flight, so reversing the two still closes the
+// channels before Disable() returns and this test still passes. It also
+// cannot cover a stream whose client has stopped reading, which leaves the
+// handler blocked in a write where a closed channel goes unobserved.
 func TestDisableTerminatesLiveStream(t *testing.T) {
 	mux := xhttp.NewServeMux()
 	s := New(mux, func() *api.Snapshot { return testSnapshot("worker-1") })

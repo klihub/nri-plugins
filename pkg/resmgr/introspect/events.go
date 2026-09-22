@@ -16,6 +16,7 @@ package introspect
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -27,14 +28,32 @@ const (
 	maxSubscribers = 16
 	// heartbeatInterval is how often a comment is written to an idle
 	// stream. Without it, kubectl port-forward and intervening proxies
-	// eventually reap the connection.
+	// eventually reap the connection. Server.heartbeat overrides it, which
+	// is how a test reaches this path without waiting half a minute.
 	heartbeatInterval = 30 * time.Second
 )
 
-// subscribe registers an event subscriber, returning false if we are full.
+// The subscriber channels' whole lifetime lives in this file — created by
+// subscribe, delivered to by notifySubscribers, closed by closeSubscribers,
+// removed by unsubscribe — so that the one invariant binding them is
+// stateable in one place: every one of those operations runs under s.mu, so
+// a close can never race a send.
+
+// subscribe registers an event subscriber, returning false if we are full
+// or no longer enabled.
 func (s *Server) subscribe() (chan uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Checking enabled matters: pkg/http dispatches with its lock
+	// released and Unregister does not wait for requests in flight, so a
+	// request admitted just before Disable() reaches its handler body
+	// afterwards. Without this it would insert a channel into the map
+	// Disable() has already emptied, and nothing would ever close it —
+	// a goroutine and a cap slot leaked until the client disconnects.
+	if !s.enabled {
+		return nil, false
+	}
 
 	if len(s.subs) >= maxSubscribers {
 		return nil, false
@@ -67,12 +86,57 @@ func (s *Server) subscribers() int {
 	return len(s.subs)
 }
 
+// notifySubscribers delivers a generation to every subscriber without ever
+// blocking. Each channel is buffered for one value: if a notification is
+// already pending the subscriber has not read it yet, and since it refetches
+// the current snapshot anyway, an older pending value loses nothing. If a
+// newer generation arrives before the subscriber reads, we replace the stale
+// value in the buffer.
+//
+// Callers must hold s.mu. That is what keeps a send from racing a close.
+func (s *Server) notifySubscribers(gen uint64) {
+	for ch := range s.subs {
+		select {
+		case ch <- gen:
+		default:
+			// Buffer is full with a stale value. Drain it and send the new one,
+			// so only the latest generation is delivered.
+			select {
+			case <-ch:
+				select {
+				case ch <- gen:
+				default:
+				}
+			default:
+			}
+		}
+	}
+}
+
+// closeSubscribers ends every event stream. Closing is the only thing that
+// does: unregistering the handler does not, because pkg/http does not wait
+// for requests in flight.
+//
+// Callers must hold s.mu.
+func (s *Server) closeSubscribers() {
+	for ch := range s.subs {
+		close(ch)
+		delete(s.subs, ch)
+	}
+}
+
 // serveEvents streams change notifications as Server-Sent Events.
 //
 // Each event carries only a generation number; the client refetches the
 // snapshot. That way the server marshals nothing until someone asks, and a
 // slow client cannot make a producer wait.
 func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -81,7 +145,7 @@ func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
 
 	ch, ok := s.subscribe()
 	if !ok {
-		http.Error(w, "too many subscribers", http.StatusServiceUnavailable)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	defer s.unsubscribe(ch)
@@ -92,7 +156,11 @@ func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	heartbeat := time.NewTicker(heartbeatInterval)
+	interval := s.heartbeat
+	if interval <= 0 {
+		interval = heartbeatInterval
+	}
+	heartbeat := time.NewTicker(interval)
 	defer heartbeat.Stop()
 
 	for {
@@ -112,7 +180,7 @@ func (s *Server) serveEvents(w http.ResponseWriter, req *http.Request) {
 			flusher.Flush()
 
 		case <-heartbeat.C:
-			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
+			if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
 				log.Debugf("failed to write heartbeat: %v", err)
 				return
 			}

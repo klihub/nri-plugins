@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	xhttp "github.com/containers/nri-plugins/pkg/http"
 	"github.com/containers/nri-plugins/pkg/introspect/api"
@@ -55,6 +56,7 @@ type Server struct {
 	cachedGen  uint64
 	cached     []byte
 	subs       map[chan uint64]struct{}
+	heartbeat  time.Duration
 }
 
 // New creates a server. It registers no handlers until Enable is called.
@@ -91,8 +93,13 @@ func (s *Server) Enable() {
 
 // Disable stops serving and drops any subscribers. It is idempotent.
 //
-// Subscribers are woken before the handler is unregistered, and the mux is
-// touched with our mutex released: see Enable().
+// Subscribers are closed before the handler is unregistered, and the mux is
+// touched with our mutex released: see Enable(). The only way to end a stream
+// is to close its channel; pkg/http no longer holds a lock across handler
+// execution, so unregistering does not interrupt one. A stream whose client
+// has stopped reading leaves the handler blocked in a write, where a closed
+// channel goes unobserved — that goroutine runs until the client times out.
+// maxSubscribers is what bounds how many such leaks can occur.
 func (s *Server) Disable() {
 	s.mu.Lock()
 	if !s.enabled {
@@ -104,11 +111,7 @@ func (s *Server) Disable() {
 
 	s.enabled = false
 	s.cached, s.cachedGen = nil, 0
-
-	for ch := range s.subs {
-		close(ch)
-		delete(s.subs, ch)
-	}
+	s.closeSubscribers()
 
 	s.mu.Unlock()
 
@@ -123,31 +126,10 @@ func (s *Server) Disable() {
 // lock. It takes this server's mutex briefly and sends without blocking.
 func (s *Server) Invalidate() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	s.generation++
-	gen := s.generation
-
-	subs := make([]chan uint64, 0, len(s.subs))
-	for ch := range s.subs {
-		subs = append(subs, ch)
-	}
-
-	s.mu.Unlock()
-
-	for _, ch := range subs {
-		notify(ch, gen)
-	}
-}
-
-// notify delivers a generation without ever blocking. The channel is
-// buffered for one value: if a notification is already pending the
-// subscriber has not read it yet, and since it refetches the current
-// snapshot anyway, an older pending value loses nothing.
-func notify(ch chan uint64, gen uint64) {
-	select {
-	case ch <- gen:
-	default:
-	}
+	s.notifySubscribers(s.generation)
 }
 
 // snapshot returns the marshalled snapshot for the current generation,
