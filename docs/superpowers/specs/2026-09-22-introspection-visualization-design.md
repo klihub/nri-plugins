@@ -225,8 +225,8 @@ type Cluster struct {
 
 type NUMANode struct {
     ID           int    `json:"id"`
-    Package      int    `json:"package"`
-    Die          int    `json:"die"`
+    Package      *int   `json:"package,omitempty"`
+    Die          *int   `json:"die,omitempty"`
     CPUs         string `json:"cpus"`
     MemoryType   string `json:"memoryType"`   // DRAM, HBM, PMEM
     NormalMemory bool   `json:"normalMemory"` // kernel-allocatable zone present
@@ -250,6 +250,12 @@ type CPU struct {
     MaxFreq  uint64 `json:"maxFreq,omitempty"`
 }
 ```
+
+A NUMA node's `package` and `die` are optional because a memory-only CXL or
+HBM node belongs to neither, and `pkg/sysfs` leaves both IDs at zero for such
+a node — indistinguishable from a real package 0. Absence says "unassociated"
+without a documented sentinel. A CPU, by contrast, always belongs to a
+package, so its equivalents stay plain integers.
 
 Every field maps to an accessor that exists today on `sysfs.System`,
 `sysfs.CPUPackage`, `sysfs.Node` and `sysfs.CPU`. One object per CPU is a few

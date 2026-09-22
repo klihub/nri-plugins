@@ -99,12 +99,17 @@ import (
 	"github.com/containers/nri-plugins/pkg/introspect/api"
 )
 
+// intp returns a pointer to an int, for the optional NUMA node fields.
+func intp(i int) *int {
+	return &i
+}
+
 // populated returns a snapshot with every field set, so that a renamed
 // or dropped JSON tag shows up as a key-set mismatch below.
 //
-// Three fields are left at their zero value on purpose, so that the
-// expected key sets also prove omitempty works: CPU.Isolated,
-// Hardware.OfflineCPUs and Assignment.SharedCPUs and its neighbours.
+// Six fields are left at their zero value on purpose, so that the expected
+// key sets also prove omitempty works: Hardware.OfflineCPUs, CPU.Isolated,
+// and Assignment's SharedCPUs, IsolatedCPUs, ReservedCPUs and CPUShare.
 func populated() *api.Snapshot {
 	return &api.Snapshot{
 		Version:    api.Version,
@@ -140,8 +145,8 @@ func populated() *api.Snapshot {
 			NUMANodes: []*api.NUMANode{
 				{
 					ID:           0,
-					Package:      0,
-					Die:          0,
+					Package:      intp(0),
+					Die:          intp(0),
 					CPUs:         "0-7",
 					MemoryType:   "DRAM",
 					NormalMemory: true,
@@ -425,6 +430,26 @@ func TestSnapshotJSONKeys(t *testing.T) {
 	}
 }
 
+// TestMemoryOnlyNUMANodeKeys pins the case the optional Package and Die
+// fields exist for: a memory-only CXL or HBM node belongs to no package,
+// and must not claim to belong to package 0.
+func TestMemoryOnlyNUMANodeKeys(t *testing.T) {
+	node := &api.NUMANode{
+		ID:         8,
+		CPUs:       "",
+		MemoryType: "HBM",
+		Capacity:   68719476736,
+	}
+
+	got := keys(t, node)
+	expected := []string{"capacity", "cpus", "id", "memoryType", "normalMemory"}
+
+	if !reflect.DeepEqual(got, expected) {
+		t.Errorf("JSON keys mismatch\n  got:      %v\n  expected: %v",
+			got, expected)
+	}
+}
+
 func TestSnapshotRoundTrip(t *testing.T) {
 	snap := populated()
 
@@ -570,10 +595,15 @@ type Cluster struct {
 }
 
 // NUMANode is a NUMA node. A node with no CPUs is a memory-only node.
+//
+// Package and Die are absent for a node that belongs to neither, which is
+// the normal case for memory-only CXL and HBM nodes. They are pointers
+// rather than an int with a sentinel value because 0 is a valid package
+// and die ID, and because absence is self-describing on the wire.
 type NUMANode struct {
 	ID           int    `json:"id"`
-	Package      int    `json:"package"`
-	Die          int    `json:"die"`
+	Package      *int   `json:"package,omitempty"`
+	Die          *int   `json:"die,omitempty"`
 	CPUs         string `json:"cpus"`
 	MemoryType   string `json:"memoryType"`
 	NormalMemory bool   `json:"normalMemory"`
@@ -630,6 +660,9 @@ type Container struct {
 }
 
 // Applied is what was actually applied to a container.
+//
+// The Cpuset field names mirror the cgroup filenames they come from, which
+// is why they are not spelled with the CPU acronym like their neighbours.
 type Applied struct {
 	CpusetCpus  string `json:"cpusetCpus,omitempty"`
 	CpusetMems  string `json:"cpusetMems,omitempty"`
@@ -888,6 +921,12 @@ func TestCollectHardwareSample2(t *testing.T) {
 		if n.Capacity <= 0 {
 			t.Errorf("memory-only node %d has capacity %d", n.ID, n.Capacity)
 		}
+		// A node with no CPUs belongs to no package or die, and must
+		// not claim package 0 just because sysfs leaves the ID unset.
+		if n.Package != nil || n.Die != nil {
+			t.Errorf("memory-only node %d claims package %v die %v",
+				n.ID, n.Package, n.Die)
+		}
 	}
 	if memoryOnly != 4 {
 		t.Errorf("expected 4 memory-only NUMA nodes, got %d", memoryOnly)
@@ -912,6 +951,8 @@ func TestCollectHardwareMapping(t *testing.T) {
 		if cpu == nil {
 			t.Fatalf("CPU %d is not in sysfs at all", c.ID)
 		}
+		// Unlike a NUMA node, a CPU always belongs to a package, so
+		// these stay plain ints.
 		if c.Package != int(cpu.PackageID()) {
 			t.Errorf("CPU %d: package %d, expected %d",
 				c.ID, c.Package, cpu.PackageID())
@@ -1029,12 +1070,18 @@ func collectHardware(sys system.System) *api.Hardware {
 		node := sys.Node(id)
 		n := &api.NUMANode{
 			ID:           int(id),
-			Package:      int(node.PackageID()),
-			Die:          int(node.DieID()),
 			CPUs:         node.CPUSet().String(),
 			MemoryType:   node.GetMemoryType().String(),
 			NormalMemory: node.HasNormalMemory(),
 			Distance:     node.Distance(),
+		}
+		// A memory-only node belongs to no package or die. sysfs
+		// leaves both IDs at zero for such a node, which is
+		// indistinguishable from a real package 0, so association is
+		// reported only for nodes that actually have CPUs.
+		if !node.CPUSet().IsEmpty() {
+			pkgID, dieID := int(node.PackageID()), int(node.DieID())
+			n.Package, n.Die = &pkgID, &dieID
 		}
 		if info, err := node.MemoryInfo(); err == nil && info != nil {
 			n.Capacity = int64(info.MemTotal)
