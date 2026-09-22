@@ -3089,7 +3089,7 @@ func (m *resmgr) collectIntrospection() *api.Snapshot {
 		NodeName: m.agent.NodeName(),
 		Policy:   policyName,
 		Version:  version.Version,
-		System:   m.cache.GetSystem(),
+		System:   m.policy.System(),
 		Cache:    introspect.CacheOf(m.cache),
 		Config:   m.cfg,
 	})
@@ -3105,14 +3105,34 @@ the `apply` closure inside `reconfigure()`. Place it immediately after the
 `instrumentation.Reconfigure` call, so that the HTTP server is configured before
 handlers are registered on it.
 
-Two unknowns to resolve while writing this, rather than guessing:
+**Getting at the discovered system.** The cache does not expose it, and resmgr
+does not hold it: `policy.NewPolicy()` calls `system.DiscoverSystem()` and keeps
+the result on the private `policy` struct. Rather than discover it a second time
+— a second full sysfs walk, and two copies that could disagree — expose the one
+that already exists. Add to the `Policy` interface in
+`pkg/resmgr/policy/policy.go`, next to `ActivePolicy()`:
 
-1. `m.cache.GetSystem()` — check the real accessor with
-   `grep -n 'System()' pkg/resmgr/cache/cache.go`. If the cache does not expose
-   the discovered system, get it the way `setupPolicy()` does and store it on
-   `resmgr` during `NewResourceManager()`.
-2. `version.Version` — confirm the symbol with
-   `go doc github.com/containers/nri-plugins/pkg/version`, and import it.
+```go
+	// System returns the discovered system topology.
+	System() system.System
+```
+
+and its implementation:
+
+```go
+// System returns the discovered system topology.
+func (p *policy) System() system.System {
+	return p.system
+}
+```
+
+`policy.Policy` has exactly one implementation and one consumer, so this is a
+two-line addition. It also guarantees the snapshot's hardware is the same
+topology the policy reasoned about, which matters because the derived section
+keys off hardware IDs.
+
+`collectIntrospection()` then reads `System: m.policy.System()`, and
+`version.Version` is the plugin build version.
 
 - [ ] **Step 6: Add the cache adapter**
 
@@ -3742,10 +3762,28 @@ against a local configuration with introspection enabled, and
 `curl localhost:8891/introspect | jq .` to confirm the four `hardware`
 assertions and the `config.data` assertion by eye.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Document the knob**
+
+Two hand-maintained lists of instrumentation options exist and are now
+incomplete, because the option they omit became real in Task 7:
+
+- `docs/resource-policy/policy/balloons.md`, which lists every
+  `instrumentation` field with an example block.
+- `docs/resource-policy/policy/topology-aware.md`, which lists them in prose.
+
+Add `introspection` to both, in the style each file already uses, saying what
+it serves and that it defaults to off. Keep it to the knob itself — the
+visualization it will eventually serve does not exist yet, so do not describe
+a UI.
+
+Run: `grep -n 'introspection' docs/resource-policy/policy/*.md`
+
+Expected: a hit in each of the two files.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add test/e2e/
+git add test/e2e/ docs/resource-policy/
 git commit -F - <<'EOF'
 e2e: verify the introspection interface.
 
@@ -3755,7 +3793,8 @@ applied cpuset and its commitment, and drops the
 container when the pod goes away.
 
 Also check that nothing is served when introspection is
-disabled, which is the default.
+disabled, which is the default, and document the knob
+in the two hand-maintained option lists.
 
 Signed-off-by: Krisztian Litkey <krisztian.litkey@intel.com>
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
