@@ -294,7 +294,10 @@ func TestCollectWorkloads(t *testing.T) {
 				cpuShares:    2048,
 				cpuQuota:     400000,
 				cpuPeriod:    100000,
-				memoryLimit:  1073741824,
+				// 1.5Gi, distinct from both the memory request (1Gi)
+				// and the memory limit (2Gi), so that sourcing the
+				// applied limit from either one fails a test.
+				memoryLimit:  1610612736,
 				rdtClass:     "burstable",
 				blockIOClass: "",
 				// Out of lexical order, so the collector's sort is
@@ -371,8 +374,8 @@ func TestCollectWorkloads(t *testing.T) {
 		got.Applied.CPUPeriod != 100000 {
 		t.Errorf("unexpected applied cgroup parameters: %+v", got.Applied)
 	}
-	if got.Applied.MemoryLimit != 1073741824 {
-		t.Errorf("applied memory limit %d, expected 1073741824",
+	if got.Applied.MemoryLimit != 1610612736 {
+		t.Errorf("applied memory limit %d, expected 1610612736",
 			got.Applied.MemoryLimit)
 	}
 
@@ -445,6 +448,13 @@ func TestCollectWorkloadsIsOrdered(t *testing.T) {
 
 	pods, containers := collectWorkloads(c)
 
+	// Guard against passing vacuously: IsSorted is true of an empty
+	// slice, so a collector that returned nothing would look ordered.
+	if len(pods) != 3 || len(containers) != 3 {
+		t.Fatalf("expected 3 pods and 3 containers, got %d and %d",
+			len(pods), len(containers))
+	}
+
 	podIDs := make([]string, 0, len(pods))
 	for _, p := range pods {
 		podIDs = append(podIDs, p.ID)
@@ -459,5 +469,135 @@ func TestCollectWorkloadsIsOrdered(t *testing.T) {
 	}
 	if !slices.IsSorted(ctrIDs) {
 		t.Errorf("containers are not sorted by ID: %v", ctrIDs)
+	}
+}
+
+func TestDerive(t *testing.T) {
+	hw := &api.Hardware{
+		CPUs: []*api.CPU{
+			{ID: 0}, {ID: 1}, {ID: 2}, {ID: 3},
+		},
+		NUMANodes: []*api.NUMANode{
+			{ID: 0}, {ID: 1},
+		},
+	}
+
+	for _, tc := range []struct {
+		name          string
+		containers    []*api.Container
+		cpuCommitment map[int]int64
+		cpuSharers    map[int]int
+		memCommitment map[int]int64
+	}{
+		{
+			name:          "no containers leaves every entry at zero",
+			containers:    nil,
+			cpuCommitment: map[int]int64{0: 0, 1: 0, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 0, 1: 0, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 0, 1: 0},
+		},
+		{
+			name: "exclusive container fully commits its CPUs",
+			containers: []*api.Container{
+				{
+					CPURequest:    2000,
+					MemoryRequest: 1000,
+					Applied:       &api.Applied{CpusetCpus: "0-1", CpusetMems: "0"},
+				},
+			},
+			cpuCommitment: map[int]int64{0: 1000, 1: 1000, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 1, 1: 1, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 1000, 1: 0},
+		},
+		{
+			name: "shared request spreads and sharers accumulate",
+			containers: []*api.Container{
+				{
+					CPURequest: 500,
+					Applied:    &api.Applied{CpusetCpus: "2-3"},
+				},
+				{
+					CPURequest: 500,
+					Applied:    &api.Applied{CpusetCpus: "2-3"},
+				},
+			},
+			cpuCommitment: map[int]int64{0: 0, 1: 0, 2: 500, 3: 500},
+			cpuSharers:    map[int]int{0: 0, 1: 0, 2: 2, 3: 2},
+			memCommitment: map[int]int64{0: 0, 1: 0},
+		},
+		{
+			name: "oversubscription is reported, not clamped",
+			containers: []*api.Container{
+				{
+					CPURequest: 4000,
+					Applied:    &api.Applied{CpusetCpus: "0"},
+				},
+			},
+			cpuCommitment: map[int]int64{0: 4000, 1: 0, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 1, 1: 0, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 0, 1: 0},
+		},
+		{
+			name: "empty cpuset contributes nothing",
+			containers: []*api.Container{
+				{
+					CPURequest: 4000,
+					Applied:    &api.Applied{CpusetCpus: ""},
+				},
+			},
+			cpuCommitment: map[int]int64{0: 0, 1: 0, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 0, 1: 0, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 0, 1: 0},
+		},
+		{
+			name: "missing applied section contributes nothing",
+			containers: []*api.Container{
+				{CPURequest: 4000},
+			},
+			cpuCommitment: map[int]int64{0: 0, 1: 0, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 0, 1: 0, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 0, 1: 0},
+		},
+		{
+			name: "cpuset outside the machine is ignored",
+			containers: []*api.Container{
+				{
+					CPURequest: 1000,
+					Applied:    &api.Applied{CpusetCpus: "99"},
+				},
+			},
+			cpuCommitment: map[int]int64{0: 0, 1: 0, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 0, 1: 0, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 0, 1: 0},
+		},
+		{
+			name: "unparseable cpuset is ignored",
+			containers: []*api.Container{
+				{
+					CPURequest: 1000,
+					Applied:    &api.Applied{CpusetCpus: "not-a-cpuset"},
+				},
+			},
+			cpuCommitment: map[int]int64{0: 0, 1: 0, 2: 0, 3: 0},
+			cpuSharers:    map[int]int{0: 0, 1: 0, 2: 0, 3: 0},
+			memCommitment: map[int]int64{0: 0, 1: 0},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := derive(hw, tc.containers)
+
+			if !reflect.DeepEqual(d.CPUCommitment, tc.cpuCommitment) {
+				t.Errorf("CPU commitment\n  got:      %v\n  expected: %v",
+					d.CPUCommitment, tc.cpuCommitment)
+			}
+			if !reflect.DeepEqual(d.CPUSharers, tc.cpuSharers) {
+				t.Errorf("CPU sharers\n  got:      %v\n  expected: %v",
+					d.CPUSharers, tc.cpuSharers)
+			}
+			if !reflect.DeepEqual(d.MemoryCommitment, tc.memCommitment) {
+				t.Errorf("memory commitment\n  got:      %v\n  expected: %v",
+					d.MemoryCommitment, tc.memCommitment)
+			}
+		})
 	}
 }

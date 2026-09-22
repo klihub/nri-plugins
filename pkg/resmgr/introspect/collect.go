@@ -25,6 +25,7 @@ import (
 	logger "github.com/containers/nri-plugins/pkg/log"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	"github.com/containers/nri-plugins/pkg/topology"
+	"github.com/containers/nri-plugins/pkg/utils/cpuset"
 
 	system "github.com/containers/nri-plugins/pkg/sysfs"
 )
@@ -284,4 +285,84 @@ func collectWorkloads(c Cache) ([]*api.Pod, []*api.Container) {
 // containerState turns an NRI container state into a short lower-case name.
 func containerState(state nri.ContainerState) string {
 	return strings.ToLower(strings.TrimPrefix(state.String(), "CONTAINER_"))
+}
+
+// derive computes the values of the snapshot's derived section.
+//
+// A container's request is spread evenly over the CPUs, or memory nodes, it
+// is allowed on, and the shares are summed. A container allowed on a single
+// CPU and requesting four of them commits that CPU fourfold; the number is
+// reported as it is rather than clamped, because oversubscription is
+// precisely what a viewer wants to see.
+//
+// A cpuset that does not parse, is empty, or names CPUs the machine does not
+// have contributes nothing. An unparseable cpuset means something upstream
+// is already broken and is logged, not guessed at.
+func derive(hw *api.Hardware, containers []*api.Container) *api.Derived {
+	d := &api.Derived{
+		CPUCommitment:    map[int]int64{},
+		CPUSharers:       map[int]int{},
+		MemoryCommitment: map[int]int64{},
+	}
+
+	if hw == nil {
+		return d
+	}
+
+	// Every CPU and node gets an entry, so consumers need no fallback.
+	for _, cpu := range hw.CPUs {
+		d.CPUCommitment[cpu.ID] = 0
+		d.CPUSharers[cpu.ID] = 0
+	}
+	for _, node := range hw.NUMANodes {
+		d.MemoryCommitment[node.ID] = 0
+	}
+
+	for _, c := range containers {
+		if c.Applied == nil {
+			continue
+		}
+
+		if cpus := parseSet(c.Applied.CpusetCpus, "cpuset.cpus", c.ID); cpus != nil {
+			if n := int64(len(cpus)); n > 0 {
+				share := c.CPURequest / n
+				for _, id := range cpus {
+					if _, ok := d.CPUCommitment[id]; !ok {
+						continue
+					}
+					d.CPUCommitment[id] += share
+					d.CPUSharers[id]++
+				}
+			}
+		}
+
+		if mems := parseSet(c.Applied.CpusetMems, "cpuset.mems", c.ID); mems != nil {
+			if n := int64(len(mems)); n > 0 {
+				share := c.MemoryRequest / n
+				for _, id := range mems {
+					if _, ok := d.MemoryCommitment[id]; !ok {
+						continue
+					}
+					d.MemoryCommitment[id] += share
+				}
+			}
+		}
+	}
+
+	return d
+}
+
+// parseSet parses a Linux list-format set, returning nil if it cannot.
+func parseSet(value, what, id string) []int {
+	if value == "" {
+		return nil
+	}
+
+	set, err := cpuset.Parse(value)
+	if err != nil {
+		log.Warnf("container %s has unparseable %s %q: %v", id, what, value, err)
+		return nil
+	}
+
+	return set.List()
 }
