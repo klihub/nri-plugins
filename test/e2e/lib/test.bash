@@ -210,6 +210,31 @@ verify-metrics-has-no-line() { # script API
     }
 }
 
+verify_introspect_url="$instrumentation_url/introspect"
+
+verify-introspect-jq() { # script API
+    # Usage: verify-introspect-jq JQ-FILTER [TIMEOUT]
+    #
+    # Wait until the introspection snapshot of the plugin satisfies
+    # JQ-FILTER, that is, until the filter outputs "true". Fail the test on
+    # timeout, 10s by default.
+    local filter="$1"
+    vm-run-until --timeout "${2:-10}" "echo 'waiting for introspection: $filter' >&2; curl --silent --noproxy localhost $verify_introspect_url | jq -e '$filter' >/dev/null" || {
+        vm-command "curl --silent --noproxy localhost $verify_introspect_url | jq ."
+        command-error "introspection snapshot does not satisfy '$filter'"
+    }
+}
+
+verify-introspect-disabled() { # script API
+    # Usage: verify-introspect-disabled
+    #
+    # Verify that the introspection endpoint is not served at all.
+    vm-command "curl --silent --show-error --output /dev/null --write-out '%{http_code}' --noproxy localhost $verify_introspect_url" || true
+    if [ "$COMMAND_OUTPUT" != "404" ]; then
+        command-error "expected HTTP 404 from $verify_introspect_url, got '$COMMAND_OUTPUT'"
+    fi
+}
+
 ###
 ### Node resource topology
 ###

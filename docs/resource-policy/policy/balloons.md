@@ -1464,6 +1464,10 @@ plugin](https://github.com/kubernetes-sigs/scheduler-plugins/blob/master/pkg/nod
   (e.g., `"10s"`).
 - `metrics.enabled` (list): Glob patterns for metrics to collect
   (e.g., `["policy"]`).
+- `introspection.enabled` (boolean): Enable the introspection
+  interface at `/introspect`, disabled by default. Serves a JSON
+  snapshot of the node topology, configuration and resource
+  allocation state.
 - `samplingRatePerMillion` (integer): Tracing sample rate (e.g.,
   `100000` for 10%).
 - `tracingCollector` (string): External tracing endpoint (e.g.,
@@ -1483,6 +1487,8 @@ instrumentation:
     enabled:
       - policy
       - '*'  # All metrics
+  introspection:
+    enabled: false
   samplingRatePerMillion: 100000
 ```
 

@@ -289,6 +289,9 @@ Additionally, the following sub-configuration is available for instrumentation:
      resource assignment are readable through `/metrics` from the configured
      `httpEndpoint`.
   - `reportPeriod`: `/metrics` aggregation interval for polled metrics.
+  - `introspection.enabled`: if set to True, a JSON introspection interface
+     is served at `/introspect`, disabled by default. Provides a snapshot of
+     the node topology, effective configuration and resource allocation state.
 
 ### Reserved and Available Resources
 

@@ -44,6 +44,8 @@ config:
 
   instrumentation:
     httpEndpoint: ":8891"
+    introspection:
+      enabled: ${INTROSPECTION:-false}
   log:
     debug:
       $(for logger in ${DEBUG_LOGGERS:-resource-manager cache libmem policy}; do echo "
