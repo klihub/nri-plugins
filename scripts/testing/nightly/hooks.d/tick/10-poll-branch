@@ -1,0 +1,265 @@
+#!/bin/bash
+# Copyright The NRI Plugins Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Ask the remote what the branch is at and submit a request when it has moved.
+#
+# One round trip, no clone and no fetch, which is what makes a trigger every few
+# minutes reasonable. Replaces the runner's --run-if-changed and --force-after.
+#
+# Nothing is remembered beyond the revision a request was last queued for and when
+# that was -- recorded only when one really was queued, so a revision whose request
+# was refused as a duplicate stays askable and is asked for again on the next tick.
+# The key on the request is what stops the same work being queued twice, so this may
+# submit on every tick without keeping track.
+
+set -o pipefail
+
+: "${E2E_REMOTE:=https://github.com/containers/nri-plugins}"
+: "${E2E_BRANCH:=main}"
+# Defaulted with ${VAR-...} rather than ${VAR:=...}, the way e2e-cron-job does it:
+# a value emptied on purpose means never force, and coming back as a day instead
+# would be the opposite of what emptying it asks for.
+E2E_FORCE_AFTER="${E2E_FORCE_AFTER-24h}"
+
+# Said rather than guessed, so that running this by hand with it unset cannot write a
+# state file to /. It comes from the orchestrator for every tick, as does
+# E2E_ORCHESTRATOR -- which is checked further down instead, after the proxies file
+# has had its say; see there for why.
+if [ -z "$E2E_STATE" ]; then
+    echo "$0: no E2E_STATE, nowhere to keep what the branch was last at" >&2
+    exit 1
+fi
+
+# One state file per remote and branch, so that two of these in the same tick
+# directory do not have to agree about anything.
+state="$E2E_STATE/poll-branch.$(printf '%s' "$E2E_REMOTE@$E2E_BRANCH" |
+                               tr -c 'A-Za-z0-9' '-')"
+
+# force_after_seconds turns 24h, 30m, 3d, a bare number of hours or never into
+# seconds. 0 means test on every tick. The spellings are the runner's, so that a
+# value moved out of e2e-cron-job.env keeps its meaning instead of being refused.
+force_after_seconds() {
+    local value="$E2E_FORCE_AFTER" number scale
+
+    case "$value" in
+        ""|never|none|no|off) echo ""; return 0;;
+        *d)  number="${value%d}"; scale=$(( 24 * 3600 ));;
+        *h)  number="${value%h}"; scale=3600;;
+        *m)  number="${value%m}"; scale=60;;
+        *s)  number="${value%s}"; scale=1;;
+        *)   number="$value";     scale=3600;;
+    esac
+
+    # Checked after the suffix is off and not before: arithmetic on a word reads
+    # it as a variable name, so an unchecked "somed" would quietly come out as
+    # zero and force a test on every tick.
+    #
+    # Bounded in length for the same reason: arithmetic here is 64-bit and wraps,
+    # so a long enough number comes out negative and makes every comparison below
+    # true, forcing a test on every tick from then on. Nine digits of hours is
+    # over a hundred thousand years, so nothing usable is being refused.
+    case "$number" in
+        ""|*[!0-9]*|??????????*) return 1;;
+    esac
+
+    # 10# because a value written 08h or 012h is otherwise read as octal: 012
+    # would quietly mean ten hours, and 08 would fail as no octal number at all.
+    echo $(( 10#$number * scale ))
+}
+
+# Kept before the proxies file is sourced below, because that file is executed rather
+# than parsed and so can assign anything, this included, and what E2E_ORCHESTRATOR holds
+# is run further down with the request's arguments on its command line. Compared
+# afterwards rather than simply used, so that an assignment which was not meant is said
+# out loud instead of ignored.
+orchestrator_given="$E2E_ORCHESTRATOR"
+
+# Asking the remote needs whatever proxies reach it. The runner sets those up for
+# itself and e2e-cron-job does this before its own fetch, but we are ahead of both:
+# without it, a proxied host cannot resolve the remote and polling says so every
+# few minutes for good. A file to source rather than a variable to pass on, so
+# nothing but sourcing it will do.
+if [ -n "$E2E_PROXIES" ] && [ -r "$E2E_PROXIES" ]; then
+    # shellcheck disable=SC1090
+    source "$E2E_PROXIES" || true
+    export http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
+fi
+
+# Not a security guard, and it must not be read as one or built on: the proxies file is
+# sourced, which is to say executed, so whoever can write it already runs as this user
+# and can do anything at all. What this catches is an accident -- a stray assignment, or
+# settings pasted into the proxies file rather than the settings file -- and it is worth
+# catching because of what the accident looks like from outside.
+#
+# Which is also why the test is the value being the one the orchestrator gave us, and not
+# merely the value being runnable: /bin/true passes the check below, and something like
+# /bin/true is the shape this goes wrong in rather than a contrived one. It exits zero
+# and prints nothing, which is exactly how a request dropped as a duplicate reads further
+# down, so every tick would report work already asked for, record nothing and queue
+# nothing, and the branch would never be tested with nothing said about it.
+if [ "$E2E_ORCHESTRATOR" != "$orchestrator_given" ]; then
+    echo "$0: $E2E_PROXIES set E2E_ORCHESTRATOR to \"$E2E_ORCHESTRATOR\";" \
+         "keep that file to proxy settings" >&2
+    exit 1
+fi
+
+# And checked here rather than up with E2E_STATE, so that what is checked is what runs.
+# e2e-cron-job orders its own the same way.
+#
+# Refused rather than worked around: a request can also be made by writing a file
+# into $E2E_QUEUE and renaming it in, but that path is only ever compared against
+# work which is running, never against work already queued, which is the check that
+# collapses a branch moving twice during a run into one test of the tip. Falling
+# back to it silently would put the bug back for whoever ran this by hand.
+if [ -z "$E2E_ORCHESTRATOR" ] || [ ! -x "$E2E_ORCHESTRATOR" ]; then
+    echo "$0: no usable E2E_ORCHESTRATOR, nothing to submit a request with" >&2
+    exit 1
+fi
+
+# GIT_TERMINAL_PROMPT=0 because a remote which wants credentials would otherwise
+# sit on its prompt until the hook timeout, which is the tick interval, with the
+# tick lock held: one unauthenticated remote would stop the orchestrator dead.
+if ! head=$(GIT_TERMINAL_PROMPT=0 git ls-remote "$E2E_REMOTE" \
+                "refs/heads/$E2E_BRANCH" 2>/dev/null); then
+    echo "$0: cannot tell what $E2E_BRANCH of $E2E_REMOTE is at" >&2
+    exit 0
+fi
+# "<sha1><tab><ref>", and nothing at all for a branch which is not there.
+head="${head%%[[:space:]]*}"
+if [ -z "$head" ]; then
+    echo "$0: $E2E_BRANCH is not on $E2E_REMOTE" >&2
+    exit 0
+fi
+
+# Read line by line and never sourced, the way the runner read it: sourcing makes
+# a corrupted or tampered state file into code, and code here could redefine the
+# queue, the revision or the state file itself.
+last_sha1=""
+last_attempt=0
+if [ -r "$state" ]; then
+    while IFS= read -r line; do
+        case "$line" in
+            last_sha1=*)    last_sha1="${line#*=}";;
+            last_attempt=*) last_attempt="${line#*=}";;
+        esac
+    done < "$state"
+fi
+
+# A timestamp we cannot use is read as long ago rather than as now: that way a
+# damaged state file leads to a test, not to a branch which is never tested again.
+case "$last_attempt" in
+    ""|*[!0-9]*|???????????*) last_attempt=0;;
+esac
+# One shape of damage a digit check cannot see: a time in the future, which a clock
+# stepped forward and then corrected leaves behind. The elapsed time below would be
+# negative and force-after suppressed until the clock caught up, which is the one
+# outcome this whole paragraph exists to avoid.
+if [ "$last_attempt" -gt "$(date +%s)" ]; then
+    last_attempt=0
+fi
+
+reason=""
+trigger=""
+if [ "$head" != "$last_sha1" ]; then
+    reason="moved to ${head:0:12}"
+    trigger="changed"
+else
+    if ! force=$(force_after_seconds); then
+        echo "$0: cannot make sense of E2E_FORCE_AFTER \"$E2E_FORCE_AFTER\"" >&2
+        exit 1
+    fi
+    if [ -n "$force" ]; then
+        elapsed=$(( $(date +%s) - last_attempt ))
+        if [ "$elapsed" -ge "$force" ]; then
+            reason="nothing new for ${elapsed}s"
+            # Said as it happened, because done/<job>/request is the record of why
+            # the job exists and "changed" there would be a lie.
+            trigger="forced"
+        fi
+    fi
+fi
+
+if [ -z "$reason" ]; then
+    exit 0
+fi
+
+echo "$0: $E2E_BRANCH of $E2E_REMOTE: $reason, asking for a test..."
+
+# The name the job, and through it the published run, will carry. In UTC, because
+# that is how every other part of this reads a run's name back: the runner mints its
+# own default the same way, and retention and e2e-report both parse one as UTC.
+name="test-$(date -u +%Y-%m-%d-%H-%M)"
+
+# Submitted through the orchestrator rather than by writing a file into the queue
+# and renaming it in. Both are documented ways to ask, and they are not equivalent
+# for us: only this one goes through submit, which refuses a key already queued as
+# well as one already running. That is what makes a branch moving three times during
+# a run into one test of the tip instead of three tests of it, each admitted after
+# the last and each publishing a full run.
+#
+# Its output is how the two outcomes are told apart: the name of the queue entry on
+# standard output when it queued one, and nothing at all on standard output when it
+# dropped the request as one already asked for. Zero either way, so the exit status
+# alone cannot tell.
+if ! id=$("$E2E_ORCHESTRATOR" request \
+          "key=$E2E_REMOTE@$E2E_BRANCH" \
+          "remote=$E2E_REMOTE" \
+          "branch=$E2E_BRANCH" \
+          "name=$name" \
+          "trigger=$trigger" \
+          "revision=$head"); then
+    # Nothing was written, so the previous record stands and this revision stays
+    # askable. Deliberately not removing it: it is somebody else's good record of a
+    # revision which really was tested.
+    echo "$0: cannot ask for a test of $E2E_BRANCH of $E2E_REMOTE" >&2
+    exit 1
+fi
+
+# Dropped as work already asked for, which is the ordinary case on every tick during
+# a run. Nothing is recorded, on purpose: the request in hand is for an earlier
+# revision, so this one has not been asked for and must stay askable. Record it here
+# and the branch would look tested the moment that run ended, the poll would see
+# nothing new, and this merge would never be tested at all.
+if [ -z "$id" ]; then
+    echo "$0: $E2E_BRANCH of $E2E_REMOTE is already asked for, asking again next tick"
+    exit 0
+fi
+
+# Recorded after the request was queued, not before it was asked for. That looks like
+# a violation of the rule the other order existed for -- record what you tried, so a
+# job which dies in its first minute is not asked for again by every tick -- and the
+# rule still holds. What changed is that queue-time dedup covers that window instead:
+# a hook killed between the submit above and this write leaves its request queued, so
+# the next tick asks, is refused, and records nothing.
+#
+# What that costs is one narrow case: killed in that window, the state file still
+# names an older revision, so once the job finishes the branch still looks moved and
+# one further run of the same tip follows. What recording first cost was worse, and it
+# was not narrow: every poll during a run has its submit refused, and a record written
+# before that is a record of a revision nothing tested. An untested merge, for as long
+# as the branch stays quiet. One redundant run is the better failure.
+if ! cat > "$state" <<EOF
+last_sha1=$head
+last_attempt=$(date +%s)
+EOF
+then
+    # Removed rather than left as it is: a write which fails at the flush, ENOSPC
+    # being the way, has already replaced the old record, and a half-written one
+    # reads as no record at all in places. No record means the next tick asks again,
+    # which the queued request absorbs.
+    echo "$0: cannot write $state after asking for $id" >&2
+    rm -f "$state"
+    exit 1
+fi

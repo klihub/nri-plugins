@@ -1,0 +1,43 @@
+#!/bin/bash
+# Copyright The NRI Plugins Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Point latest at the run which just finished.
+#
+# Relatively, always. os.Root in the results server refuses an absolute symlink
+# even when its target is inside the root, so an absolute one would serve nothing.
+
+set -o pipefail
+
+# Said out loud, like the run hook says it: with nothing to point at or nowhere to
+# point from, the symptom of a misconfigured host is otherwise that latest silently
+# never moves again.
+if [ -z "$E2E_RESULTS" ]; then
+    echo "$0: no E2E_RESULTS, nowhere to point latest (results= on a request)" >&2
+    exit 1
+fi
+if [ -z "$E2E_JOB" ]; then
+    echo "$0: no E2E_JOB, no run to point latest at" >&2
+    exit 1
+fi
+if [ ! -d "$E2E_RESULTS/$E2E_JOB" ]; then
+    echo "$0: no results for $E2E_JOB, leaving latest alone" >&2
+    exit 0
+fi
+
+# The name of the run and not the path to it: see above.
+if ! ln -sfn "$E2E_JOB" "$E2E_RESULTS/latest"; then
+    echo "$0: cannot point $E2E_RESULTS/latest at $E2E_JOB" >&2
+    exit 1
+fi

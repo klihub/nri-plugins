@@ -1,0 +1,163 @@
+#!/bin/bash
+# Copyright The NRI Plugins Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Remove published results which are older than we keep.
+#
+# After a job rather than inside one, so a machine which has not tested lately
+# still tidies up. Order by when a run ran and not by when its directory was last
+# written to: reporting on an old run touches it, which would otherwise make it
+# look like one of the newest.
+
+set -o pipefail
+
+# Both defaulted with ${VAR-...} rather than ${VAR:=...} for the days and
+# ${VAR:-...} for the count: a days value emptied on purpose means keep
+# everything, while an emptied count means nothing at all and is better read as
+# the default than as "keep none of them".
+E2E_RETENTION_DAYS="${E2E_RETENTION_DAYS-100}"
+E2E_RETENTION_KEEP="${E2E_RETENTION_KEEP:-10}"
+
+# Refused rather than guessed at, both of them, and refused for being too long as
+# well as for not being a number: test(1) compares 64-bit integers and says
+# "integer expected" for anything outside that, and a comparison which fails that
+# way is false, which in both uses below means remove. So a value like
+# 99999999999999999999, which is how somebody writes "keep everything", would
+# delete instead. Nine digits is over two million years of retention.
+case "$E2E_RETENTION_DAYS" in
+    ""|0|never|no|none|forever) exit 0;;
+    *[!0-9]*|??????????*)
+        echo "$0: cannot make sense of E2E_RETENTION_DAYS \"$E2E_RETENTION_DAYS\"" >&2
+        exit 1
+        ;;
+esac
+case "$E2E_RETENTION_KEEP" in
+    *[!0-9]*|??????????*)
+        echo "$0: cannot make sense of E2E_RETENTION_KEEP \"$E2E_RETENTION_KEEP\"" >&2
+        exit 1
+        ;;
+esac
+# Said out loud, like the run hook says it: with nothing here to publish into, the
+# symptom of a misconfigured host is otherwise that nothing is ever pruned and
+# nothing ever says why.
+if [ -z "$E2E_RESULTS" ]; then
+    echo "$0: no E2E_RESULTS, nowhere to prune (results= on a request)" >&2
+    exit 1
+fi
+if [ ! -d "$E2E_RESULTS" ]; then
+    echo "$0: no results published in $E2E_RESULTS yet, nothing to prune" >&2
+    exit 0
+fi
+
+# is_run: a directory with results in it is a run of ours, whatever it is called.
+# Said by its contents because --name takes anything. A run which was cut short
+# still has our log. No to a link, which is what latest is.
+is_run() {
+    local dir="$1"
+
+    if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+        return 1
+    fi
+
+    [ -f "$dir/results.json" ] || [ -f "$dir/summary.txt" ] || [ -f "$dir/e2e-runner.log.txt" ]
+}
+
+# run_started: when a run ran, in seconds since the epoch, from its name when the
+# name says and from its directory when it does not.
+#
+# Read as UTC, because that is how a run is named: the poll hook mints the name
+# with date -u, and reading it back in local time would put every age out by the
+# host's offset, which is enough to move a deletion across a day boundary. Runs
+# published before this was settled were named in local time, so their age shifts
+# by the offset once and never again.
+run_started() {
+    local name="$1" dir="$2" when
+
+    if [[ "$name" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2})[-_]?([0-9]{2})-?([0-9]{2})? ]]; then
+        if when=$(date -u -d "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}:${BASH_REMATCH[3]:-00}" \
+                      +%s 2>/dev/null); then
+            echo "$when"
+            return 0
+        fi
+    fi
+
+    stat -c %Y "$dir" 2>/dev/null
+}
+
+# A glob over the directory and not a listing split into words: a run published
+# under a name with a * or a ? in it would otherwise be expanded against the
+# filesystem, and one with a space in it would come apart.
+#
+# The names go into an array and never through a pipeline. What is sorted below is
+# an index into it, so that the string handed to rm is the very one is_run
+# approved: read strips leading and trailing whitespace and splits on a newline, so
+# a name carrying either would otherwise have us remove a neighbour, or a run which
+# is not a run at all.
+names=()
+whens=()
+for dir in "$E2E_RESULTS"/*; do
+    run="${dir##*/}"
+    if ! is_run "$dir"; then
+        continue
+    fi
+    when=$(run_started "$run" "$dir")
+    if [ -z "$when" ]; then
+        echo "$0: cannot tell when $run ran, keeping it" >&2
+        continue
+    fi
+    names+=("$run")
+    whens+=("$when")
+done
+
+# Newest first, by when the run ran. Both fields are digits, so nothing here can
+# be confused by a name.
+order=""
+for i in "${!names[@]}"; do
+    order="$order${whens[i]} $i"$'\n'
+done
+
+kept=0
+while read -r when index; do
+    if [ -z "$index" ]; then
+        continue
+    fi
+
+    # Both guards, and this one stays even though order is built from the array
+    # itself a few lines up and nothing touches it in between: an empty name here
+    # makes the removal below "$E2E_RESULTS/", which rm -rf takes as the results
+    # root and empties. Nothing on this path is worth being clever about.
+    run="${names[index]}"
+    if [ -z "$run" ]; then
+        continue
+    fi
+
+    # Keep the newest regardless of age, so a break in testing cannot leave us
+    # with no results at all.
+    kept=$((kept + 1))
+    if [ "$kept" -le "$E2E_RETENTION_KEEP" ]; then
+        continue
+    fi
+
+    age=$(( ($(date +%s) - when) / (24 * 3600) ))
+    if [ "$age" -le "$E2E_RETENTION_DAYS" ]; then
+        continue
+    fi
+
+    echo "$0: removing $run, $age days old..."
+    # -- because a name is whatever --name was given, and free on the one line
+    # here where being wrong cannot be undone.
+    if ! rm -rf -- "$E2E_RESULTS/$run"; then
+        echo "$0: failed to remove $E2E_RESULTS/$run" >&2
+    fi
+done <<< "$(sort -rn <<< "$order")"
