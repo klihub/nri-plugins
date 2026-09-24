@@ -38,6 +38,10 @@ func fatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
+func warnf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "e2e-orchestrator: "+format+"\n", args...)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)

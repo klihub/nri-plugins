@@ -29,7 +29,11 @@ var fieldName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // Names the orchestrator sets itself. A request carrying one is refused rather
 // than quietly overwritten, so a producer is never left believing it said
 // something it did not.
-var reservedKeys = []string{"job", "queued_at", "started_at", "attempt"}
+//
+// attempt is deliberately not reserved: a requeued request carries it, and both
+// acceptRequest and activeKeys must parse it. A producer who forges it only
+// denies itself a retry.
+var reservedKeys = []string{"job", "queued_at", "started_at"}
 
 // Suffixes which say how a value is encoded. The encoding of a field is fixed by
 // whoever defines the field, never chosen per request, so a consumer of a field

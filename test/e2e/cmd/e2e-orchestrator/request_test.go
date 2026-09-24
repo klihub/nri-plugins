@@ -57,14 +57,13 @@ func TestRequestIgnoresBlanksAndComments(t *testing.T) {
 // than a default which quietly does something else.
 func TestRequestRejections(t *testing.T) {
 	for what, body := range map[string]string{
-		"no equals sign":       "branch main\n",
-		"empty name":           "=main\n",
-		"name with a dash":     "my-field=x\n",
-		"name starting digit":  "1field=x\n",
-		"reserved key":         "job=x\n",
-		"reserved key attempt": "attempt=2\n",
-		"malformed json":       "candidates_JSON={not json\n",
-		"nothing at all":       "\n",
+		"no equals sign":      "branch main\n",
+		"empty name":          "=main\n",
+		"name with a dash":    "my-field=x\n",
+		"name starting digit": "1field=x\n",
+		"reserved key":        "job=x\n",
+		"malformed json":      "candidates_JSON={not json\n",
+		"nothing at all":      "\n",
 	} {
 		if _, err := parseRequest([]byte(body)); err == nil {
 			t.Errorf("accepted %s: %q", what, body)

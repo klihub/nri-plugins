@@ -145,7 +145,7 @@ func activeKeys(cfg *Config) (map[string]bool, error) {
 
 		req, err := parseRequest(data)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "e2e-orchestrator: %s: %v\n", filepath.Base(path), err)
+			warnf("%s: %v", filepath.Base(path), err)
 			continue
 		}
 		if key := req.Key(); key != "" {
@@ -182,7 +182,7 @@ func requestCommand(cfg *Config, args []string) error {
 		return err
 	}
 	if path == "" {
-		fmt.Fprintf(os.Stderr, "e2e-orchestrator: %s is already asked for, nothing to do\n", req.Key())
+		warnf("%s is already asked for, nothing to do", req.Key())
 		return nil
 	}
 
@@ -190,10 +190,3 @@ func requestCommand(cfg *Config, args []string) error {
 
 	return nil
 }
-
-// Both of these are placeholders so this task compiles. Task 4 deletes them
-// together and defines the real Job in job.go. Delete BOTH or neither: leaving
-// one behind is a duplicate declaration or an undefined symbol.
-func liveJobs(cfg *Config) ([]*Job, error) { return nil, nil }
-
-type Job struct{ Request *Request }
