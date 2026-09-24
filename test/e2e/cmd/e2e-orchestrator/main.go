@@ -92,7 +92,3 @@ func main() {
 		os.Exit(runJob(cfg, os.Args[2]))
 	}
 }
-
-func tick(cfg *Config) error                       { return fmt.Errorf("not implemented") }
-func emitCommand(cfg *Config, args []string) error { return fmt.Errorf("not implemented") }
-func runJob(cfg *Config, id string) int            { return 1 }

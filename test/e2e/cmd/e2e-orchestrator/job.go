@@ -15,7 +15,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -64,6 +66,15 @@ type Job struct {
 	Request *Request
 }
 
+// errBadRequest marks a request whose own contents are why it cannot be accepted,
+// as against a failure of ours which a later tick could get past.
+//
+// The distinction decides what happens to the work: admit sets a bad request aside
+// for good, because nothing retries it, and retries everything else. Without it a
+// full disk or a file field pointing at something not written yet would look the
+// same as nonsense, and work somebody asked for would be thrown away.
+var errBadRequest = errors.New("bad request")
+
 // acceptRequest takes a request out of the queue and makes a job of it.
 //
 // The queue entry is removed only once the job is complete, so a loser cleans up
@@ -75,7 +86,7 @@ func acceptRequest(cfg *Config, reqPath string) (*Job, error) {
 	}
 	req, err := parseRequest(data)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", filepath.Base(reqPath), err)
+		return nil, fmt.Errorf("%s: %w: %w", filepath.Base(reqPath), errBadRequest, err)
 	}
 
 	suggested, _ := req.Get("name")
@@ -142,7 +153,7 @@ func makeJobDir(cfg *Config, suggested string) (string, string, error) {
 		dir := filepath.Join(cfg.jobsDir(), id)
 
 		// Check if the name is taken in either jobs/ or done/.
-		if _, err := os.Stat(filepath.Join(cfg.doneDir(), id)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(cfg.doneDir(), id)); !errors.Is(err, fs.ErrNotExist) {
 			if err != nil {
 				return "", "", err
 			}
@@ -157,7 +168,7 @@ func makeJobDir(cfg *Config, suggested string) (string, string, error) {
 		if err == nil {
 			return id, dir, nil
 		}
-		if !os.IsExist(err) {
+		if !errors.Is(err, fs.ErrExist) {
 			return "", "", err
 		}
 		if attempt > 100 {
@@ -211,7 +222,7 @@ func parseRequestStored(data []byte) (*Request, error) {
 func allJobs(cfg *Config) ([]*Job, error) {
 	entries, err := os.ReadDir(cfg.jobsDir())
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
@@ -227,7 +238,7 @@ func allJobs(cfg *Config) ([]*Job, error) {
 		if err != nil {
 			// A directory with no request yet is one acceptRequest is still
 			// building, not a corrupt job. Only say something about corruption.
-			if !os.IsNotExist(err) {
+			if !errors.Is(err, fs.ErrNotExist) {
 				warnf("%s: %v", entry.Name(), err)
 			}
 			job = &Job{ID: entry.Name(), Dir: dir, Request: &Request{}}
@@ -396,7 +407,7 @@ func (j *Job) requeue(cfg *Config) error {
 func pruneDone(cfg *Config) error {
 	entries, err := os.ReadDir(cfg.doneDir())
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		warnf("%s: %v", cfg.doneDir(), err)
