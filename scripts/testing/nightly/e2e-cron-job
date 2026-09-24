@@ -144,12 +144,6 @@ opts=(--remote "$E2E_REMOTE"
       --local "$E2E_CLONE"
       --results "$E2E_RESULTS")
 
-case "$E2E_RUN_IF_CHANGED" in
-    1|true|yes|y)
-        opts+=(--run-if-changed --force-after "$E2E_FORCE_AFTER")
-        ;;
-esac
-
 case "$E2E_PACK_RESULTS" in
     1|true|yes|y)
         opts+=(--pack-results)

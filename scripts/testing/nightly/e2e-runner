@@ -19,18 +19,16 @@ CLONED_REPO="${CLONED_REPO:-/opt/e2e-test/nri-plugins/nri-plugins}"
 TEST_BRANCH="${TEST_BRANCH:-main}"
 # RESULT_ROOT: directory for publishing each run's results under
 RESULT_ROOT="${RESULT_ROOT:-/opt/e2e-test/nri-plugins/results}"
-# RESULT_NAME: name of new test run
-RESULT_NAME="${RESULT_NAME:-$(date +%Y-%m-%d-%H-%M)}"
+# RESULT_NAME: name of new test run, minted in UTC because that is how a name is
+# read back: retention and e2e-report both take a run's name for UTC, and the
+# polling hook mints the one it asks for the same way.
+RESULT_NAME="${RESULT_NAME:-$(date -u +%Y-%m-%d-%H-%M)}"
 # PROXIES_SRC: bash-sourcable file to set up proxies in the environment
 PROXIES_SRC=""
 # SKIP_WORKTREE: if set to non-empty, assume worktree already exists
 SKIP_WORKTREE="${SKIP_WORKTREE:-}"
 # E2E_TESTS: end-to-end tests to run instead of full test set
 E2E_TESTS="${E2E_TESTS:-}"
-# RETENTION_DAYS: remove published results older than this, 0 to keep them all
-RETENTION_DAYS="${RETENTION_DAYS:-100}"
-# RETENTION_KEEP: never remove this many latest results, however old they are
-RETENTION_KEEP="${RETENTION_KEEP:-3}"
 # KEEP_COVERAGE_DATA: keep the collected coverage data, not just the report
 KEEP_COVERAGE_DATA="${KEEP_COVERAGE_DATA:-}"
 # KEEP_ARTIFACTS: whose bulky artifacts to keep as they are instead of packing
@@ -48,12 +46,6 @@ FULL_BUILD="${FULL_BUILD:-}"
 # OWN_TOOLING: run the tests of the branch with the tooling in the tree we were
 # started from rather than the branch's own.
 OWN_TOOLING="${OWN_TOOLING:-}"
-# RUN_IF_CHANGED: only test if the remote branch has moved since we last tried,
-# which is what makes it sane to trigger us from cron every few minutes
-RUN_IF_CHANGED="${RUN_IF_CHANGED:-}"
-# FORCE_AFTER: run even with nothing changed once this long has passed since we
-# last tried. Takes 30m, 12h, 3d or a bare number of hours.
-FORCE_AFTER="${FORCE_AFTER:-24h}"
 
 # This script.
 SELF="$0"
@@ -74,8 +66,6 @@ COVERAGE_REPORT_SH="report-coverage.sh"
 COVERAGE_REPORT_DIR="coverage-report"
 # STATUS_TXT: where e2e-report records the verdict of a run
 STATUS_TXT="status.txt"
-# LOG_TXT: the log of a run, the first thing it publishes
-LOG_TXT="e2e-runner.log.txt"
 # ARTIFACTS_TAR: the bulky artifacts of a test case, packed up
 ARTIFACTS_TAR="artifacts.tar.xz"
 # PACKED_ARTIFACTS: which artifacts of a test case are worth packing. The
@@ -96,9 +86,6 @@ VAGRANT_DIR=".vagrant"
 VAGRANT_TMP="${VAGRANT_HOME:-$HOME/.vagrant.d}/tmp/vagrant-qemu"
 # QEMU_PID: the pid file qemu is started with, within VAGRANT_TMP/<id>
 QEMU_PID="qemu.pid"
-# RUN_STATE: what we last tried to test, in the result root. Which revision,
-# of which branch of which remote, and when we tried.
-RUN_STATE=".e2e-runner.state"
 # RUN_LOCK: what we hold for as long as a run lasts, in the result root. Two
 # runs sharing a result root would share a worktree and fight over the VMs.
 RUN_LOCK=".e2e-runner.lock"
@@ -129,9 +116,8 @@ E2E_REPORT_DIR=""
 VMS_LEFT_RUNNING=""
 
 # Whether our bootstrap copy re-execed into us, which is what says the lock is
-# already held and the decision to run already made. Read here, before anything
-# of ours sets it, and never from the option we were passed: --skip-worktree is
-# for anyone to give.
+# already held. Read here, before anything of ours sets it, and never from the
+# option we were passed: --skip-worktree is for anyone to give.
 RE_EXECED=""
 if [ -n "${!RUN_LOCK_FD}" ]; then
     RE_EXECED=1
@@ -155,10 +141,6 @@ usage() {
     echo "  --results|--out|-o <dir>  top-level directory for publishing results"
     echo "  --name|-n <name>          subdirectory for results of this run"
     echo "  --skip-worktree           skip worktree preparation, assume already done"
-    echo "  --retention-days <days>   remove results older than this, 0 to keep all"
-    echo "                            (default: $RETENTION_DAYS)"
-    echo "  --retention-keep <count>  always keep this many latest results"
-    echo "                            (default: $RETENTION_KEEP)"
     echo "  --keep-coverage-data      keep collected coverage data, not just the report"
     echo "  --keep-artifacts <what>   keep the command transcripts and the logs of"
     echo "                            all|failed|none of the tests as they are, and"
@@ -173,11 +155,6 @@ usage() {
     echo "                            branch's: the tests and the plugins are"
     echo "                            the branch's, the runner and e2e-report"
     echo "                            stay ours"
-    echo "  --run-if-changed          do nothing unless the remote branch has"
-    echo "                            moved since we last tried to test it"
-    echo "  --force-after <time>      with --run-if-changed, test anyway once this"
-    echo "                            long has passed since we last tried"
-    echo "                            (default: $FORCE_AFTER)"
     echo "  --full-build              build all binaries and images"
     echo "  --minimal-build           build the plugins the tests need, no more"
     echo "                            (by default full once a week, minimal otherwise)"
@@ -240,46 +217,6 @@ source_proxies() {
     done
 }
 
-force_after_seconds() {
-    # Usage: force_after_seconds
-    #
-    # Print FORCE_AFTER as seconds, nothing at all if it says never to force,
-    # and fail if it says something we cannot read. A bare number is hours: the
-    # point of forcing is to keep testing something daily.
-    local spec="$FORCE_AFTER"
-
-    case "$spec" in
-        never|none|no|off|"")
-            return 0
-            ;;
-    esac
-
-    if [[ ! "$spec" =~ ^([0-9]+)([smhd]?)$ ]]; then
-        return 1
-    fi
-
-    case "${BASH_REMATCH[2]:-h}" in
-        s) echo "${BASH_REMATCH[1]}" ;;
-        m) echo "$(( ${BASH_REMATCH[1]} * 60 ))" ;;
-        h) echo "$(( ${BASH_REMATCH[1]} * 3600 ))" ;;
-        d) echo "$(( ${BASH_REMATCH[1]} * 24 * 3600 ))" ;;
-    esac
-}
-
-as_time() {
-    # Usage: as_time SECONDS
-    #
-    # Print a number of seconds the way one would say it, so that a message
-    # about --force-after 90m does not report an hour and a half as "1h".
-    local secs="$1"
-
-    if [ "$secs" -lt 3600 ]; then
-        echo "$((secs / 60))m"
-    else
-        echo "$((secs / 3600))h$(( (secs % 3600) / 60 ))m"
-    fi
-}
-
 acquire_run_lock() {
     # Usage: acquire_run_lock
     #
@@ -309,12 +246,6 @@ acquire_run_lock() {
     fi
 
     if ! flock -n "$fd"; then
-        # Polling, so another run going is the normal course of things and not
-        # worth an error: we will look again in a few minutes.
-        if [ -n "$RUN_IF_CHANGED" ]; then
-            info "another run is going, nothing to do..."
-            exit 0
-        fi
         fatal "another run is going, holding $RESULT_ROOT/$RUN_LOCK"
     fi
 
@@ -322,123 +253,6 @@ acquire_run_lock() {
     # exec into must not lock again: flock is per open file, so a second open of
     # the same lock by the same process would simply fail.
     export $RUN_LOCK_FD="$fd"
-}
-
-remote_head() {
-    # Usage: remote_head
-    #
-    # Print the revision at the tip of the branch we are to test, asked of the
-    # remote itself: no clone, no fetch, one round trip. Needs whatever proxies
-    # reach the remote, so this runs after they are set up.
-    local head
-
-    if ! head=$(git ls-remote "$REMOTE_REPO" "refs/heads/$TEST_BRANCH" 2>/dev/null); then
-        return 1
-    fi
-
-    # "<sha1><tab><ref>", and nothing at all for a branch which is not there.
-    head="${head%%[[:space:]]*}"
-    if [ -z "$head" ]; then
-        return 1
-    fi
-
-    echo "$head"
-}
-
-run_state() {
-    # Usage: run_state KEY
-    #
-    # Print what we recorded under KEY the last time we tried to test.
-    local key="$1" state="$RESULT_ROOT/$RUN_STATE" line
-
-    if [ ! -r "$state" ]; then
-        return 1
-    fi
-
-    while read -r line; do
-        case "$line" in
-            "$key="*)
-                echo "${line#*=}"
-                return 0
-                ;;
-        esac
-    done < "$state"
-
-    return 1
-}
-
-save_run_state() {
-    # Usage: save_run_state SHA1
-    #
-    # Record what we are about to try to test. What we *tried*, not what came of
-    # it: a run which dies early would otherwise be started again by every poll
-    # from then on, for as long as the branch stayed where it is.
-    local sha1="$1" state="$RESULT_ROOT/$RUN_STATE"
-
-    must-mkdir "$RESULT_ROOT" "result root"
-
-    if ! cat > "$state" <<EOF
-last_attempt=$(date +%s)
-last_sha1=$sha1
-last_remote=$REMOTE_REPO
-last_branch=$TEST_BRANCH
-EOF
-    then
-        error "failed to record what we are testing in $state"
-    fi
-}
-
-decide_to_run() {
-    # Usage: decide_to_run
-    #
-    # Work out whether there is anything to test, and record what we are about
-    # to try. With --run-if-changed, a branch which is where it was the last
-    # time we tried means there is nothing to do, so exit -- which is what makes
-    # it sane to be triggered from cron every few minutes. Unless it has been
-    # long enough to be worth testing again anyway: --force-after.
-    #
-    # The remote is asked either way, so that a run nobody asked to be
-    # conditional still leaves the record straight for the next one which is.
-    local head was elapsed force
-
-    if [ -n "$RE_EXECED" ]; then
-        return 0
-    fi
-
-    if ! head=$(remote_head); then
-        if [ -n "$RUN_IF_CHANGED" ]; then
-            fatal "cannot tell what $TEST_BRANCH of $REMOTE_REPO is at"
-        fi
-        error "cannot tell what $TEST_BRANCH of $REMOTE_REPO is at, testing anyway..."
-        return 0
-    fi
-
-    if [ -n "$RUN_IF_CHANGED" ]; then
-        if ! force=$(force_after_seconds); then
-            fatal "cannot make sense of --force-after \"$FORCE_AFTER\""
-        fi
-
-        was=$(run_state last_sha1)
-
-        # A result root pointed at another branch, or another remote, has
-        # nothing to say about this one: test rather than compare histories
-        # which have nothing to do with each other.
-        if [ "$was" != "$head" ] ||
-           [ "$(run_state last_remote)" != "$REMOTE_REPO" ] ||
-           [ "$(run_state last_branch)" != "$TEST_BRANCH" ]; then
-            info "$TEST_BRANCH is at ${head:0:12}, ${was:+last tried ${was:0:12}, }testing..."
-        else
-            elapsed=$(( $(date +%s) - $(run_state last_attempt || echo 0) ))
-            if [ -n "$force" ] && [ "$elapsed" -ge "$force" ]; then
-                info "nothing new at ${head:0:12}, but $(as_time $elapsed) since the last try, testing anyway..."
-            else
-                info "nothing new at ${head:0:12}, nothing to do..."
-                exit 0
-            fi
-        fi
-    fi
-
-    save_run_state "$head"
 }
 
 prepare_worktree() {
@@ -494,7 +308,7 @@ prepare_worktree() {
     if [ -x "$WORKTREE/scripts/testing/nightly/e2e-runner" ]; then
         # The options below are passed on, the rest default from the
         # environment, so export those to keep them across the re-exec.
-        export RETENTION_DAYS RETENTION_KEEP KEEP_COVERAGE_DATA KEEP_ARTIFACTS
+        export KEEP_COVERAGE_DATA KEEP_ARTIFACTS
         export K8SCRI FULL_BUILD PACK_RESULTS KEEP_GIVEN
         exec "$WORKTREE/scripts/testing/nightly/e2e-runner" \
              --skip-worktree \
@@ -896,16 +710,6 @@ generate_report() {
     fi
 }
 
-publish_latest() {
-    local link="$RESULT_ROOT/latest"
-
-    # Link to a stable place to look at the newest results.
-    info "pointing $link at $RESULT_NAME..."
-    if ! ln -sfn "$RESULT_NAME" "$link"; then
-        error "failed to point $link at $RESULT_NAME"
-    fi
-}
-
 run_status() {
     # Print the verdict of the run, as e2e-report recorded it.
     # Nothing to go by means something went wrong before the tests,
@@ -1094,93 +898,6 @@ pack_results() {
     fi
 }
 
-run_started() {
-    # Usage: run_started NAME DIR
-    #
-    # Print when a run ran, as seconds since the epoch. A run is named
-    # after when it started, but --name can takes anything, so fall back
-    # to the timestamp of its directory.
-    local name="$1" dir="$2" when
-
-    if [[ "$name" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2})[-_]?([0-9]{2})-?([0-9]{2})? ]]; then
-        if when=$(date -d "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}:${BASH_REMATCH[3]:-00}" \
-                      +%s 2>/dev/null); then
-            echo "$when"
-            return 0
-        fi
-    fi
-
-    stat -c %Y "$dir" 2>/dev/null
-}
-
-is_run() {
-    # Usage: is_run DIR
-    #
-    # Decide if a directory is from our test run. Anything with results
-    # in it is a run of ours, regardless of what --name called it. A run
-    # which was cut short still has our log. Say no to links. 'latest'
-    # points at a run we look at anyway.
-    local dir="$1"
-
-    if [ -L "$dir" ] || [ ! -d "$dir" ]; then
-        return 1
-    fi
-
-    [ -f "$dir/results.json" ] || [ -f "$dir/summary.txt" ] || [ -f "$dir/$LOG_TXT" ]
-}
-
-prune_old_results() {
-    local run dir when age kept=0 runs=""
-
-    case "$RETENTION_DAYS" in
-        ""|0|no|none|forever)
-            info "keeping all published results..."
-            return 0
-            ;;
-    esac
-
-    info "removing published results older than $RETENTION_DAYS days..."
-
-    # Order the runs by when they ran, not by when their directory was
-    # last written to. Reporting on an old run touches it, which would
-    # otherwise make it look like one of the latest ones to keep.
-    for run in $(ls -1 "$RESULT_ROOT" 2>/dev/null); do
-        dir="$RESULT_ROOT/$run"
-        if ! is_run "$dir"; then
-            continue
-        fi
-        when=$(run_started "$run" "$dir")
-        if [ -z "$when" ]; then
-            error "failed to tell when $run ran, keeping it"
-            continue
-        fi
-        runs="$runs$when $run"$'\n'
-    done
-
-    while read -r when run; do
-        if [ -z "$run" ]; then
-            continue
-        fi
-
-        # Keep the latest results regardless of their age, so that a break
-        # in running the tests cannot leave us without any results at all.
-        kept=$((kept + 1))
-        if [ "$kept" -le "$RETENTION_KEEP" ]; then
-            continue
-        fi
-
-        age=$(( ($(date +%s) - when) / (24 * 3600) ))
-        if [ "$age" -le "$RETENTION_DAYS" ]; then
-            continue
-        fi
-
-        info "removing $run, $age days old..."
-        if ! rm -rf "$RESULT_ROOT/$run"; then
-            error "failed to remove $RESULT_ROOT/$run"
-        fi
-    done <<< "$(sort -rn <<< "$runs")"
-}
-
 #
 # main script
 #
@@ -1220,14 +937,6 @@ while [  "$#" -gt 0 ] && [ "${1#-}" != "$1" ]; do
             SKIP_WORKTREE=1
             shift
             ;;
-        --retention-days)
-            RETENTION_DAYS="$2"
-            shift 2
-            ;;
-        --retention-keep)
-            RETENTION_KEEP="$2"
-            shift 2
-            ;;
         --keep-coverage-data)
             KEEP_COVERAGE_DATA=1
             KEEP_GIVEN="$KEEP_GIVEN coverage"
@@ -1253,14 +962,6 @@ while [  "$#" -gt 0 ] && [ "${1#-}" != "$1" ]; do
         --own-tooling)
             OWN_TOOLING=1
             shift
-            ;;
-        --run-if-changed)
-            RUN_IF_CHANGED=1
-            shift
-            ;;
-        --force-after)
-            FORCE_AFTER="$2"
-            shift 2
             ;;
 
         --full-build)
@@ -1320,7 +1021,6 @@ esac
 
 acquire_run_lock
 source_proxies
-decide_to_run
 prepare_worktree
 prepare_result_dir
 collect_git_info
@@ -1334,9 +1034,7 @@ generate_coverage_report
 generate_summary
 prune_coverage_data
 pack_artifacts
-prune_old_results
 generate_report
-publish_latest
 cleanup_worktree
 
 # Say a final summary of how the run went. The test verdict

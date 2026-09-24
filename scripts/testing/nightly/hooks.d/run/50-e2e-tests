@@ -1,0 +1,83 @@
+#!/bin/bash
+# Copyright The NRI Plugins Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Run the end-to-end tests for a job.
+#
+# This is the only file which knows both the orchestrator's contract and the
+# runner's command line, which is where that knowledge belongs: a project with
+# different work replaces this one file and nothing else.
+
+set -o pipefail
+
+HERE="$(dirname "$(realpath "$0")")"
+RUNNER="${E2E_RUNNER:-$HERE/../../e2e-runner}"
+
+if [ ! -x "$RUNNER" ]; then
+    echo "$0: no e2e-runner to run at $RUNNER; set E2E_RUNNER" >&2
+    exit 1
+fi
+
+if [ -z "$E2E_REMOTE" ]; then
+    echo "$0: no E2E_REMOTE, no repository to test a branch of (remote= on a request)" >&2
+    exit 1
+fi
+if [ -z "$E2E_BRANCH" ]; then
+    echo "$0: no E2E_BRANCH, no branch to test (branch= on a request)" >&2
+    exit 1
+fi
+
+# Said here rather than left to the runner: the orchestrator knows nothing about
+# testing and so never sets this, which makes it ours to insist on. Passed empty
+# it would fail inside the runner's lock, blaming the result root instead.
+if [ -z "$E2E_RESULTS" ]; then
+    echo "$0: no E2E_RESULTS, nowhere to publish a run (results= on a request)" >&2
+    exit 1
+fi
+
+opts=(--remote "$E2E_REMOTE"
+      --branch "$E2E_BRANCH"
+      --results "$E2E_RESULTS")
+
+# The orchestrator names a run, being the only thing which knows what else is
+# live, so the runner must not second-guess it. Left out when there is no job to
+# be named after, which is how this stays runnable by hand.
+if [ -n "$E2E_JOB" ]; then
+    opts+=(--name "$E2E_JOB")
+fi
+
+# The clone belongs to one remote, so it is a setting of the host and not of the
+# job. Left out when unset, the runner having its own default.
+if [ -n "$E2E_CLONE" ]; then
+    opts+=(--local "$E2E_CLONE")
+fi
+if [ -n "$E2E_PROXIES" ]; then
+    opts+=(--source-proxies "$E2E_PROXIES")
+fi
+# The same spellings e2e-cron-job takes, so that a value moved from one to the
+# other keeps its meaning instead of being quietly dropped.
+case "$E2E_PACK_RESULTS" in
+    1|true|yes|y) opts+=(--pack-results);;
+esac
+case "$E2E_OWN_TOOLING" in
+    1|true|yes|y) opts+=(--own-tooling);;
+esac
+
+# Splitting is what the two below want, globbing never is: a test named "*" would
+# otherwise arrive as the contents of whatever directory we were started in.
+set -f
+
+# Word splitting is what we want here: these carry several arguments.
+# shellcheck disable=SC2086
+exec "$RUNNER" "${opts[@]}" $E2E_OPTIONS $E2E_TESTS
