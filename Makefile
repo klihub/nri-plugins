@@ -66,6 +66,9 @@ E2E_WORKDIR   ?= $(TOP_DIR)/e2e-results
 E2E_REPORT_SRC := ./test/e2e/cmd/e2e-report
 E2E_REPORT     := $(BIN_PATH)/e2e-report
 
+E2E_ORCH_SRC   := ./test/e2e/cmd/e2e-orchestrator
+E2E_ORCH       := $(BIN_PATH)/e2e-orchestrator
+
 DOCKER       := docker
 DOCKER_BUILD := $(DOCKER) buildx build --load
 
@@ -163,7 +166,7 @@ build: build-plugins build-binaries build-check
 build-static:
 	$(MAKE) STATIC=1 build
 
-clean: clean-plugins clean-binaries clean-e2e-report
+clean: clean-plugins clean-binaries clean-e2e-report clean-e2e-orchestrator
 
 allclean: clean clean-cache
 
@@ -194,6 +197,13 @@ $(E2E_REPORT): $(wildcard test/e2e/cmd/e2e-report/*.go)
 	mkdir -p $(BIN_PATH) && \
 	$(GO_BUILD) -o $@ $(E2E_REPORT_SRC)
 
+e2e-orchestrator: $(E2E_ORCH)
+
+$(E2E_ORCH): $(wildcard test/e2e/cmd/e2e-orchestrator/*.go)
+	$(Q)echo "Building $@..."; \
+	mkdir -p $(BIN_PATH) && \
+	$(GO_BUILD) -o $@ $(E2E_ORCH_SRC)
+
 build-check:
 	$(Q)$(GO_BUILD) -v $(GO_MODULES)
 
@@ -216,6 +226,10 @@ clean-binaries:
 clean-e2e-report:
 	$(Q)echo "Cleaning $(notdir $(E2E_REPORT))"; \
 	rm -f $(E2E_REPORT)
+
+clean-e2e-orchestrator:
+	$(Q)echo "Cleaning $(notdir $(E2E_ORCH))"; \
+	rm -f $(E2E_ORCH)
 
 clean-images:
 	$(Q)echo "Cleaning exported images and deployment files."; \
