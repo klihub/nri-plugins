@@ -297,6 +297,9 @@ in the lexical order of their names, which is what the two-digit prefix is for.
 `E2E_HOOKS` says where they are; left unset, `e2e-cron-job` points it at the
 `hooks.d` beside itself, which is where the shipped ones are.
 
+The contract a hook of your own is written against is the package comment of
+`test/e2e/cmd/e2e-orchestrator`: `go doc ./test/e2e/cmd/e2e-orchestrator`.
+
 | hook | event | what it does |
 | --- | --- | --- |
 | `tick/10-poll-branch` | `tick` | asks the remote what the branch is at, in one `git ls-remote`, and submits a request if it moved since the last tick or if `E2E_FORCE_AFTER` has passed with nothing new |
