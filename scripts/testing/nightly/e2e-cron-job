@@ -1,168 +1,142 @@
 #!/bin/bash
-
-# The whole of what a cron job needs to run the e2e tests, so that a crontab
-# line is this script and nothing else:
+# Copyright The NRI Plugins Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Run the orchestrator from cron.
+#
+# A thin front and nothing else: the settings file, the proxies, and then whatever
+# arguments we were given, handed to e2e-orchestrator. So one crontab line ticks
+# and another submits a request:
 #
 #   PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
-#   */5 * * * * /path/to/nri-plugins/scripts/testing/nightly/e2e-cron-job
+#   */5 * * * * /path/to/scripts/testing/nightly/e2e-cron-job tick
+#   2 2 * * *   /path/to/scripts/testing/nightly/e2e-cron-job request key=nightly
 #
-# Every setting comes from the environment, so a host is configured without
-# editing this file. Install the settings file next to it:
+# Ticking every five minutes is not a typo, and nothing here decides whether to
+# test: a tick runs the tick hooks, and hooks.d/tick/10-poll-branch asks the
+# remote whether the branch has moved since it last looked. That is how a merged
+# PR gets tested soon after it lands rather than the following night. What keeps
+# one run at a time is the cap, E2E_MAX_JOBS, which ships at 1.
+#
+# Settings come from one file, installed and edited:
 #
 #   install -m 644 scripts/testing/nightly/e2e-cron-job.env \
 #       /etc/sysconfig/nri-plugins-e2e-cron-job
 #
-# and edit that. What it leaves out defaults below. Anything given on our own
-# command line is passed on to the runner, so a one-off is
+# That path and no other, so that neither a crontab line nor somebody at a prompt
+# has to name it. E2E_CRON_ENV overrides it, for a host which cannot write there or
+# which runs two of these, and then everything invoking us has to set it.
 #
-#   e2e-cron-job --no-pack-results --runtime crio
-#
-# Every five minutes is not a typo: with E2E_RUN_IF_CHANGED the runner does
-# nothing unless the branch it tests has moved since it last tried, so polling
-# often is how a merged PR gets tested soon after it lands rather than the
-# following night. A run already going is left alone, and once E2E_FORCE_AFTER
-# has passed with nothing new, the tests run anyway.
+# Nothing here insists on the file, but a host wants one: the orchestrator has no
+# default for E2E_ROOT, and the run hook would rather fail than invent a repository
+# to test or somewhere to publish it.
 
 set -o pipefail
 
-SELF="$0"
-HERE="$(dirname "$(realpath "$SELF")")"
+SELF="$(basename "$0")"
+HERE="$(dirname "$(realpath "$0")")"
+
+# A crontab line from before the orchestrator carries no arguments at all, and
+# would otherwise get the orchestrator's usage with nothing to say why. Said here
+# because a host mid-migration is exactly where this happens.
+if [ $# -eq 0 ]; then
+    echo "$SELF: nothing to do: say 'tick', or 'request key=value ...'" >&2
+    exit 2
+fi
 
 # ENV_FILE: where a host says what it wants, and the only thing to edit
 ENV_FILE="${E2E_CRON_ENV:-/etc/sysconfig/nri-plugins-e2e-cron-job}"
 
+# set -a so that what the file sets is exported and not merely read, which is the
+# whole of how a hook gets configured.
+#
+# The orchestrator picks out the settings which are its own, and hands its
+# environment to every hook, which pick out theirs: so E2E_REMOTE, E2E_RESULTS,
+# E2E_RETENTION_DAYS and the rest arrive at the hook that wants them without
+# anything in between having to know their names. Sourced without set -a they
+# would be variables of this shell and reach nobody, and that was measured rather
+# than reasoned about: a tick whose E2E_REMOTE was not exported polls the default
+# remote and asks for a test of upstream main.
 if [ -r "$ENV_FILE" ]; then
+    set -a
     # shellcheck disable=SC1090
     if ! source "$ENV_FILE"; then
         echo "$SELF: failed to read $ENV_FILE" >&2
         exit 1
     fi
+    set +a
 fi
 
-# E2E_REMOTE: repository to test a branch of
-E2E_REMOTE="${E2E_REMOTE:-https://github.com/containers/nri-plugins}"
-# E2E_BRANCH: which branch of it
-E2E_BRANCH="${E2E_BRANCH:-main}"
-# E2E_CLONE: where to keep the clone of it. A clone belongs to one remote: the
-# runner refuses one whose origin is another, so a second remote wants a second
-# directory here.
-E2E_CLONE="${E2E_CLONE:-/opt/e2e-test/nri-plugins/nri-plugins}"
-# E2E_RESULTS: where to publish the results of each run
-E2E_RESULTS="${E2E_RESULTS:-/opt/e2e-test/nri-plugins/results}"
-# E2E_PROXIES: a file setting up proxies in the environment, if this host needs
-# one to reach the remote and pull images
-E2E_PROXIES="${E2E_PROXIES:-}"
-# E2E_RUN_IF_CHANGED: only test when the branch has moved, which is what makes
-# it sane to be triggered every few minutes. Empty, no or 0 to test on every
-# trigger. Defaulted with ${VAR-...} rather than ${VAR:-...}, so that a setting
-# emptied on purpose stays empty instead of coming back as the default.
-E2E_RUN_IF_CHANGED="${E2E_RUN_IF_CHANGED-1}"
-# E2E_FORCE_AFTER: test anyway once this long has passed with nothing new.
-# Defaulted with ${VAR-...} like the switches above, so that an empty value stays
-# empty: the runner reads that as never, and coming back as a day instead would be
-# the opposite of what emptying it asks for.
-E2E_FORCE_AFTER="${E2E_FORCE_AFTER-24h}"
-# E2E_PACK_RESULTS: publish a run as a single archive, keeping everything it
-# collected. Needs e2e-report serve to browse.
-E2E_PACK_RESULTS="${E2E_PACK_RESULTS-1}"
-# E2E_OPTIONS: anything else to pass the runner, as it would be on its command
-# line, for what this script has no setting of its own
-E2E_OPTIONS="${E2E_OPTIONS:-}"
-# E2E_OWN_TOOLING: test the branch with the tooling in the tree this script is
-# installed from, rather than the branch's. The tests and the plugins are still
-# the branch's, so this is how to exercise runner or e2e-report changes against a
-# branch which knows nothing of them.
-E2E_OWN_TOOLING="${E2E_OWN_TOOLING-}"
-# E2E_UPDATE_CLONE: bring the clone up to the branch before running, so that the
-# copy of the runner which parses our options is the branch's too. Off by
-# default: it is a reset --hard of a directory which may be someone's tree.
-E2E_UPDATE_CLONE="${E2E_UPDATE_CLONE-}"
+# Kept before the proxies file is sourced below, and after the settings file above,
+# which is the one place entitled to set it. The proxies file is executed rather than
+# parsed, so it can assign anything, this included, and this variable is the whole of
+# what this script goes on to exec. Compared afterwards rather than simply used, so
+# that an assignment which was not meant is said out loud instead of ignored.
+orchestrator_given="$E2E_ORCHESTRATOR"
 
-update_clone() {
-    # Bring the clone up to the branch we are to test. The runner re-execs itself
-    # out of the worktree it makes, so everything it does after parsing its
-    # options is the branch's code already -- but it cannot re-exec its way out
-    # of not understanding an option the checked-out copy has never heard of.
-    # This is what closes that gap, for whoever wants it closed.
-    #
-    # Safe to do although we may well be running out of this very clone: git
-    # replaces a file rather than writing over it, and the copy of us the shell
-    # is reading stays open and therefore intact. Checked, not assumed.
-    local origin
+# The proxies this host needs to reach the remote and pull images. Done here as
+# well as in the polling hook, so that everything a tick starts inherits them and
+# nothing below has to source the file again. Exported the same way, so a file
+# which assigns http_proxy without exporting it works too.
+#
+# The file is executed, not parsed, so keep it to proxy settings: a stray
+# E2E_REMOTE in it would win over the settings file above, and the only sign
+# would be the wrong repository being polled.
+if [ -n "$E2E_PROXIES" ] && [ -r "$E2E_PROXIES" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$E2E_PROXIES" || true
+    set +a
+fi
 
-    # Nothing to update yet. The runner clones it, at the branch, by itself.
-    if [ ! -e "$E2E_CLONE/.git" ]; then
-        return 0
-    fi
-
-    # Fetching needs whatever proxies reach the remote. The runner sets those up
-    # for itself, but we are ahead of it here.
-    if [ -n "$E2E_PROXIES" ] && [ -r "$E2E_PROXIES" ]; then
-        # shellcheck disable=SC1090
-        source "$E2E_PROXIES" || true
-        export http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
-    fi
-
-    # A clone belongs to one remote. Resetting it to some other remote's branch
-    # would be worse than leaving it alone, and the runner says so properly.
-    origin=$(git -C "$E2E_CLONE" remote get-url origin 2>/dev/null)
-    if [ "$origin" != "$E2E_REMOTE" ]; then
-        echo "$SELF: $E2E_CLONE is a clone of ${origin:-nothing} and not of" \
-             "$E2E_REMOTE, leaving it as it is" >&2
-        return 0
-    fi
-
-    # A failure here is not ours to be fatal about: the checkout we have still
-    # runs, and the runner fetches for itself and fails properly if it cannot.
-    if ! git -C "$E2E_CLONE" fetch -q origin; then
-        echo "$SELF: failed to fetch $E2E_REMOTE in $E2E_CLONE," \
-             "running with the clone as it is" >&2
-        return 0
-    fi
-    if ! git -C "$E2E_CLONE" reset -q --hard "origin/$E2E_BRANCH"; then
-        echo "$SELF: failed to put $E2E_CLONE on $E2E_BRANCH," \
-             "running with the clone as it is" >&2
-        return 0
-    fi
-}
-
-case "$E2E_UPDATE_CLONE" in
-    1|true|yes|y)
-        update_clone
-        ;;
-esac
-
-RUNNER="${E2E_RUNNER:-$HERE/e2e-runner}"
-
-if [ ! -x "$RUNNER" ]; then
-    echo "$SELF: no e2e-runner to run at $RUNNER" >&2
+# Not a security guard, and it must not be read as one or built on: the proxies file is
+# sourced, which is to say executed, so whoever can write it already runs as this user
+# and can do anything at all. What this catches is an accident -- a stray assignment, or
+# settings pasted into the proxies file rather than the settings file -- and it is worth
+# catching because of what the accident looks like from outside.
+#
+# Which is also why the test is the value being the one we were given, and not merely
+# the value being runnable: /bin/true passes the check below, and something like
+# /bin/true is the shape this goes wrong in rather than a contrived one. Point the exec
+# at anything which exits zero and every tick succeeds having polled nothing, swept
+# nothing and admitted nothing. A nightly doing nothing, saying nothing, for good, which
+# is the failure this whole arrangement exists to make impossible.
+if [ "$E2E_ORCHESTRATOR" != "$orchestrator_given" ]; then
+    echo "$SELF: $E2E_PROXIES set E2E_ORCHESTRATOR to \"$E2E_ORCHESTRATOR\":" \
+         "keep that file to proxy settings" >&2
     exit 1
 fi
 
-opts=(--remote "$E2E_REMOTE"
-      --branch "$E2E_BRANCH"
-      --local "$E2E_CLONE"
-      --results "$E2E_RESULTS")
+ORCHESTRATOR="${E2E_ORCHESTRATOR:-$HERE/../../../build/bin/e2e-orchestrator}"
 
-case "$E2E_PACK_RESULTS" in
-    1|true|yes|y)
-        opts+=(--pack-results)
-        ;;
-esac
-
-case "$E2E_OWN_TOOLING" in
-    1|true|yes|y)
-        opts+=(--own-tooling)
-        ;;
-esac
-
-if [ -n "$E2E_PROXIES" ]; then
-    opts+=(--source-proxies "$E2E_PROXIES")
+if [ ! -x "$ORCHESTRATOR" ]; then
+    echo "$SELF: no e2e-orchestrator to run at $ORCHESTRATOR:" \
+         "run 'make e2e-orchestrator', or set E2E_ORCHESTRATOR" >&2
+    exit 1
 fi
 
-# Unquoted on purpose: a setting of several flags in one value is the point of
-# it, and an empty one has to come to nothing rather than to an empty argument.
-# shellcheck disable=SC2206,SC2086
-opts+=($E2E_OPTIONS)
+# The hooks ship beside us, so that is where they are unless this host says
+# otherwise. Left to itself the orchestrator would look under $E2E_ROOT/hooks.d,
+# which nothing installs anything into.
+export E2E_HOOKS="${E2E_HOOKS:-$HERE/hooks.d}"
 
-exec "$RUNNER" "${opts[@]}" "$@"
+# One file for the whole nightly: what we just read is what the orchestrator
+# reads. Its own settings are in the environment already, set -a having exported
+# them, and the environment wins over the file -- so this is here to name the file
+# for every orchestrator downstream of us as well, the one a hook invokes through
+# E2E_ORCHESTRATOR included, and there is one answer to which file this host is
+# configured by whichever process is asked.
+export E2E_ORCHESTRATOR_ENV="${E2E_ORCHESTRATOR_ENV:-$ENV_FILE}"
+
+exec "$ORCHESTRATOR" "$@"
