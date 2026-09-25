@@ -507,6 +507,55 @@ func TestServeIndexSkipsLatest(t *testing.T) {
 	}
 }
 
+// TestServeLatestRedirectsToTheRun checks that the link at the newest run answers
+// with a redirect to that run's report, under each of the three names it is asked
+// for by, packed or not.
+//
+// It cannot be reported on under its own name: isRun does not follow a link, which
+// is what keeps the index from listing the newest run twice. So before this the one
+// URL worth bookmarking was the only one which never rendered a report -- it got a
+// directory listing, which is how it was found.
+func TestServeLatestRedirectsToTheRun(t *testing.T) {
+	for _, packed := range []bool{false, true} {
+		for _, asked := range []string{"/latest", "/latest/", "/latest/" + indexHTML} {
+			t.Run(fmt.Sprintf("packed=%v,%s", packed, asked), func(t *testing.T) {
+				root, name := newRoot(t, packed)
+
+				got := get(t, root, asked)
+				if got.Code != http.StatusFound {
+					t.Errorf("got %d, want %d", got.Code, http.StatusFound)
+				}
+				if want := "/" + name + "/" + indexHTML; got.Header().Get("Location") != want {
+					t.Errorf("Location: got %q, want %q",
+						got.Header().Get("Location"), want)
+				}
+			})
+		}
+	}
+}
+
+// TestServeLatestIsNotFollowedOutOfTheRoot checks that a link which does not name a
+// sibling is refused rather than resolved.
+//
+// A report is read with plain file operations rather than through the root, so a link
+// resolved here is one the reader would follow anywhere it points.
+func TestServeLatestIsNotFollowedOutOfTheRoot(t *testing.T) {
+	root, _ := newRoot(t, false)
+
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.Rename(newRun(t), elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := get(t, root, "/escape/"); got.Code == http.StatusFound {
+		t.Errorf("a link out of the root was resolved to %q",
+			got.Header().Get("Location"))
+	}
+}
+
 // snapshot records what is under root, so that a caller can tell whether
 // anything about it changed.
 func snapshot(t *testing.T, root string) map[string]string {

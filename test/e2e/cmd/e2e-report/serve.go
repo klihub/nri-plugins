@@ -152,6 +152,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A link to a run, latest being the one anything writes, is answered with a
+	// redirect to the run itself. Found rather than moved permanently: latest moves
+	// whenever a run finishes, and a permanent redirect is exactly what a browser is
+	// entitled to remember.
+	if run, ok := s.linkedRun(name); ok {
+		http.Redirect(w, r, "/"+run+"/"+indexHTML, http.StatusFound)
+		return
+	}
+
 	if info, err := s.dir.Stat(name); err == nil {
 		if !info.IsDir() {
 			// Reading a log and looking at one are not the same thing, and
@@ -630,6 +639,40 @@ func (s *Server) reportedRun(name string) (string, bool) {
 	}
 
 	return run, true
+}
+
+// linkedRun tells which run a request asks for through a link to one, if that is
+// what it asks for. latest is the link which exists: a post-run hook points it at the
+// newest run, and asking for its report is asking for that run's.
+//
+// isRun does not follow a link, deliberately, so that the index lists the newest run
+// once rather than twice -- which leaves the report of latest to be found here, and
+// the one URL anybody bookmarks was otherwise the one which could never render a
+// report.
+//
+// Only a link naming a sibling, which is what the hook writes. A target with a
+// separator in it, or one naming the directory above, is refused rather than
+// resolved: a report is read with plain file operations and not through the root, so
+// a link leading out of the root has to be stopped here rather than further in, where
+// nothing is watching for one.
+func (s *Server) linkedRun(name string) (string, bool) {
+	link, rest := split("/" + name)
+	if link == "" || link == "." || (rest != "" && rest != indexHTML) {
+		return "", false
+	}
+
+	target, err := os.Readlink(filepath.Join(s.root, link))
+	if err != nil {
+		return "", false
+	}
+	if target != filepath.Base(target) || target == "." || target == ".." {
+		return "", false
+	}
+	if !isRun(filepath.Join(s.root, target)) {
+		return "", false
+	}
+
+	return target, true
 }
 
 // serveRunReport renders the report of a run from what the run recorded. A run
