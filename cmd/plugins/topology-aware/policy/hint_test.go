@@ -15,8 +15,9 @@
 package topologyaware
 
 import (
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"testing"
+
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 
 	"github.com/containers/nri-plugins/pkg/topology"
 	idset "github.com/intel/goresctrl/pkg/utils"

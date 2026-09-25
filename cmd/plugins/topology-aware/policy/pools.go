@@ -19,8 +19,8 @@ import (
 	"math"
 	"sort"
 
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 	corev1 "k8s.io/api/core/v1"
 
 	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/topologyaware"

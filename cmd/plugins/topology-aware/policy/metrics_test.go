@@ -25,9 +25,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/topologyaware"
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
 	"github.com/containers/nri-plugins/pkg/metrics"
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 	policyapi "github.com/containers/nri-plugins/pkg/resmgr/policy"
 	"github.com/containers/nri-plugins/pkg/testutils"
 )

@@ -16,10 +16,11 @@ package topologyaware
 
 import (
 	"fmt"
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
 )

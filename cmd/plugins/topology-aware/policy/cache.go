@@ -17,9 +17,10 @@ package topologyaware
 import (
 	"encoding/json"
 	"errors"
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"maps"
 	"time"
+
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"

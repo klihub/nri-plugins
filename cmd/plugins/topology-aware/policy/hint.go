@@ -18,8 +18,8 @@ import (
 	"strconv"
 	"strings"
 
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/topology"
 	idset "github.com/intel/goresctrl/pkg/utils"
 )

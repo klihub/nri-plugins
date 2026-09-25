@@ -16,8 +16,9 @@ package topologyaware
 
 import (
 	"fmt"
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"strconv"
+
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 
 	"github.com/containers/nri-plugins/pkg/irq"
 	"github.com/containers/nri-plugins/pkg/topology"

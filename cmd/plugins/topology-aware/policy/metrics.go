@@ -17,9 +17,10 @@ package topologyaware
 import (
 	"context"
 	"fmt"
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"slices"
 	"strings"
+
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"

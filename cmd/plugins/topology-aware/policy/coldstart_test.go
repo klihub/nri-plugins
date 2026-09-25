@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	"github.com/containers/nri-plugins/pkg/resmgr/events"
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 	policyapi "github.com/containers/nri-plugins/pkg/resmgr/policy"
 	idset "github.com/intel/goresctrl/pkg/utils"

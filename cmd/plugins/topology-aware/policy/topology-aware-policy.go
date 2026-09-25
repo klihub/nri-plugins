@@ -19,8 +19,8 @@ import (
 	"fmt"
 
 	"github.com/containers/nri-plugins/pkg/irq"
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	cfgapi "github.com/containers/nri-plugins/pkg/apis/config/v1alpha1/resmgr/policy/topologyaware"

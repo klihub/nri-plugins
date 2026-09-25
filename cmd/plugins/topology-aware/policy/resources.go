@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/containers/nri-plugins/pkg/agent/podresapi"
-	libcpu "github.com/containers/nri-plugins/pkg/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
+	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
 	"github.com/containers/nri-plugins/pkg/topology"
 
 	"github.com/containers/nri-plugins/pkg/cpuallocator"
