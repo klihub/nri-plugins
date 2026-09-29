@@ -149,6 +149,11 @@ type Node interface {
 
 	GetScore(Request) Score
 	HintScore(topology.Hint) float64
+
+	AllCpus() *libcpu.CpuMask
+	AllowedCpus() *libcpu.CpuMask
+	IsolatedCpus() *libcpu.CpuMask
+	ReservedCpus() *libcpu.CpuMask
 }
 
 // node represents data common to all node types.
@@ -166,6 +171,7 @@ type node struct {
 	mem      idset.IDSet // controllers with normal DRAM attached
 	pMem     idset.IDSet // controllers with PMEM attached
 	hbm      idset.IDSet // controllers with HBM attached
+	cpus     *libcpu.CpuMask
 }
 
 // nodeself is used to 'upcast' a generic Node interface to a type-specific one.
@@ -406,6 +412,22 @@ func (n *node) GetSupply() Supply {
 // FreeSupply returns the available CPU supply of this node.
 func (n *node) FreeSupply() Supply {
 	return n.freeres
+}
+
+func (n *node) AllCpus() *libcpu.CpuMask {
+	return n.cpus.Clone()
+}
+
+func (n *node) AllowedCpus() *libcpu.CpuMask {
+	return n.cpus.Intersection(n.policy.allowed)
+}
+
+func (n *node) ReservedCpus() *libcpu.CpuMask {
+	return n.AllowedCpus().Intersection(n.policy.reserved)
+}
+
+func (n *node) IsolatedCpus() *libcpu.CpuMask {
+	return n.AllowedCpus().Intersection(n.policy.isolated)
 }
 
 // Get the set of memory attached to this node.

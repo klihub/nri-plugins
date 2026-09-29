@@ -97,6 +97,7 @@ func (p *policy) buildRootPool() {
 		log.Infof("+ created pool %s", vroot.Name())
 
 		cpus := p.machine.PresentCPUs()
+		vroot.cpus = cpus
 		vroot.noderes, vroot.freeres = p.getCpuSupply(vroot, cpus)
 		vroot.mem, vroot.pMem, vroot.hbm = p.getMemSupply(vroot, cpus)
 	} else {
@@ -120,6 +121,7 @@ func (p *policy) buildSocketPool(socketID idset.ID, root Node) {
 	log.Infof("+ created pool %s", socket.Name())
 
 	cpus := packageCPUs(p.machine, socketID)
+	socket.cpus = cpus
 	socket.noderes, socket.freeres = p.getCpuSupply(socket, cpus)
 	socket.mem, socket.pMem, socket.hbm = p.getMemSupply(socket, cpus)
 
@@ -170,6 +172,7 @@ func (p *policy) buildDiePool(socketID, dieID idset.ID, socket Node) {
 	log.Infof("+ created pool %s", die.Name())
 
 	cpus := dieCPUs(p.machine, socketID, dieID)
+	die.cpus = cpus
 	die.noderes, die.freeres = p.getCpuSupply(die, cpus)
 	die.mem, die.pMem, die.hbm = p.getMemSupply(die, cpus)
 
@@ -208,6 +211,7 @@ func (p *policy) buildNumaNodePool(socketID, nodeID idset.ID, parent Node) {
 	log.Infof("+ created pool %s", node.Name())
 
 	cpus := p.machine.MemoryNode(nodeID).CPUs()
+	node.cpus = cpus
 	node.noderes, node.freeres = p.getCpuSupply(node, cpus)
 	node.mem, node.pMem, node.hbm = p.getMemSupply(node, cpus)
 
@@ -241,6 +245,7 @@ func (p *policy) buildL3CachePool(id idset.ID, cpus *libcpu.CpuMask, parent Node
 
 	log.Infof("+ created pool %s (cpus: %s)", l3CacheNode.Name(), cpus)
 
+	l3CacheNode.cpus = cpus
 	l3CacheNode.noderes, l3CacheNode.freeres = p.getCpuSupply(l3CacheNode, cpus)
 	l3CacheNode.mem, l3CacheNode.pMem, l3CacheNode.hbm = p.getMemSupply(l3CacheNode, cpus)
 }
