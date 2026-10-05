@@ -96,6 +96,14 @@ func (p CPUPriority) Value() cpuallocator.CPUPriority {
 	return cpuallocator.PriorityNone
 }
 
+func ParseCPUPriority(v string) (CPUPriority, error) {
+	switch prio := CPUPriority(v); prio {
+	case PriorityHigh, PriorityNormal, PriorityLow:
+		return prio, nil
+	}
+	return PriorityNone, fmt.Errorf("invalid CPU priority %q", v)
+}
+
 // +kubebuilder:object:generate=true
 // +optional
 type Config struct {
@@ -322,4 +330,18 @@ func (c *Config) GetDefaultSchedulingClass(ns string, qos v1.PodQOSClass) (*Sche
 	}
 
 	return c.GetPodQoSSchedulingClass(qos)
+}
+
+// IsReservedPoolNamespace returns true if the given namespace is configured
+// to take resources from the reserved pool or is the kube-system namespace.
+func (c *Config) IsReservedPoolNamespace(ns string) bool {
+	if ns == "kube-system" {
+		return true
+	}
+	for _, reserved := range c.ReservedPoolNamespaces {
+		if ns == reserved {
+			return true
+		}
+	}
+	return false
 }
