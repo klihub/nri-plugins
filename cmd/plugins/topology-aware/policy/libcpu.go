@@ -17,12 +17,17 @@ package topologyaware
 import (
 	"github.com/containers/nri-plugins/pkg/resmgr/cache"
 	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
-	corev1 "k8s.io/api/core/v1"
+	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
 )
 
 type LibCpu struct {
 	policy  *policy
 	account *libcpu.Accounting
+}
+
+type LibCpuSupply struct {
+	lib  *LibCpu
+	node Node
 }
 
 type LibCpuRequest struct {
@@ -32,42 +37,21 @@ type LibCpuRequest struct {
 }
 
 type LibCpuOptions struct {
-	lib *LibCpu
-	ctr cache.Container
-	/*
-		full        int             // number of full CPUs requested
-		fraction    int             // amount of fractional CPU requested
-		limit       int             // CPU limit, MaxInt for no limit
-		isolate     bool            // prefer isolated exclusive CPUs
-		cpuType     cpuType         // preferred CPU type (normal, reserved)
-		cpuClass    string          // requested or default CPU class
-		prio        cpuPrio         // CPU priority preference, ignored for fraction requests
-		memReq      int64           // memory request
-		memLim      int64           // memory limit
-		memType     memoryType      // requested types of memory
-		pickByHints bool            // preference to pick resources by hints
-		irqs        *IrqAffinity    // IRQ affinity for this request
-		coldStart time.Duration
-	*/
-
-	qosClass       corev1.PodQOSClass
-	cpuRequest     int
-	cpuLimit       int
-	preserveCpu    bool
-	preferReserved bool
-	preferShared   bool
-
-	exclusive     int
-	shared        int
-	isolate       bool
-	strictIsolate bool
-	memRequest    int64
-	memLimit      int64
+	*Preferences
 }
 
-type LibCpuSupply struct {
+type LibCpuOffer struct {
+	req    *LibCpuRequest
+	supply *LibCpuSupply
+	cpu    *libcpu.Offer
+	mem    *libmem.Offer
+}
+
+type LibCpuGrant struct {
 	lib  *LibCpu
 	node Node
+	cpu  *libcpu.CpuMask
+	mem  *libmem.NodeMask
 }
 
 func (p *policy) NewLibCpu() *LibCpu {
@@ -75,45 +59,6 @@ func (p *policy) NewLibCpu() *LibCpu {
 		policy:  p,
 		account: libcpu.NewAccounting(p.allowed),
 	}
-}
-
-func (lib *LibCpu) NewRequest(ctr cache.Container) (*LibCpuRequest, error) {
-	opt, err := lib.GetRequestOptions(ctr)
-	if err != nil {
-		return nil, err
-	}
-	return &LibCpuRequest{
-		lib: lib,
-		ctr: ctr,
-		opt: opt,
-	}, nil
-}
-
-func (lib *LibCpu) GetRequestOptions(ctr cache.Container) (*LibCpuOptions, error) {
-	opt := &LibCpuOptions{
-		ctr: ctr,
-	}
-
-	if err := opt.getBasicCpuPreferences(); err != nil {
-		return nil, err
-	}
-	return nil, nil
-}
-
-func (o *LibCpuOptions) getBasicCpuPreferences() error {
-	resources, ok := o.ctr.GetResourceUpdates()
-	if !ok {
-		resources = o.ctr.GetResourceRequirements()
-	}
-
-	o.qosClass = o.ctr.GetQOSClass()
-	request := resources.Requests[corev1.ResourceCPU]
-	limit := resources.Limits[corev1.ResourceCPU]
-	o.cpuRequest = int(request.MilliValue())
-	o.cpuLimit = int(limit.MilliValue())
-	o.preserveCpu = o.ctr.PreserveCpuResources()
-
-	return nil
 }
 
 func (lib *LibCpu) NewSupply(node Node) *LibCpuSupply {
@@ -146,46 +91,23 @@ func (s *LibCpuSupply) Clone() *LibCpuSupply {
 	}
 }
 
-func (s *LibCpuSupply) IsolatedCPUs() *libcpu.CpuMask {
-	return s.node.AllowedCpus().Intersection(s.lib.policy.isolated)
+func (s *LibCpuSupply) GetOffer(req *LibCpuRequest) (*LibCpuOffer, error) {
+	return &LibCpuOffer{
+		supply: s,
+		req:    req,
+	}, nil
 }
 
-func (s *LibCpuSupply) ReservedCPUs() *libcpu.CpuMask {
-	return s.node.AllowedCpus().Intersection(s.lib.policy.reserved)
-}
-
-func (s *LibCpuSupply) SharableCpus() *libcpu.CpuMask {
-	cpus := s.node.AllowedCpus()
-	cpus = cpus.Difference(s.lib.policy.isolated)
-	cpus = cpus.Difference(s.lib.policy.reserved)
-	cpus = cpus.Difference(s.lib.account.ExclusiveCpus())
-	return cpus
-}
-
-func (s *LibCpuSupply) GrantedReserved() int {
-	reserved := s.ReservedCPUs()
-	if reserved.Size() == 0 {
-		return 0
+func (lib *LibCpu) NewRequest(ctr cache.Container) (*LibCpuRequest, error) {
+	prefs, err := lib.policy.GetContainerPreferences(ctr)
+	if err != nil {
+		return nil, err
 	}
-
-	return 0
+	return &LibCpuRequest{
+		lib: lib,
+		ctr: ctr,
+		opt: &LibCpuOptions{
+			Preferences: prefs,
+		},
+	}, nil
 }
-
-/*
-type LibCpuRequest struct {
-	lib *LibCpu
-	ctr cache.Container
-}
-
-type LibCpuOffer struct {
-	req  *LibCpuRequest
-	node Node
-	cpus *libcpu.CpuMask
-}
-
-type LibCpuGrant struct {
-	lib  *LibCpu
-	ctr  cache.Container
-	node Node
-}
-*/
