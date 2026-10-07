@@ -428,3 +428,190 @@ func TestOfferHeadroomRefusesWithoutAPool(t *testing.T) {
 		})
 	}
 }
+
+// greedyExclusive takes the CPUs of pool one by one, keeping each one Admits
+// accepts. Laminar constraints form a matroid, so greedy hits the max in any
+// order. It is the ground truth for ExclusiveCapacity.
+func greedyExclusive(t *testing.T, a *Accounting, pool *CpuMask) int {
+	t.Helper()
+
+	taken := NewCpuMask()
+	free := pool.Intersection(a.AllCpus()).Difference(a.ExclusiveCpus())
+
+	free.ForEachCpu(func(cpu int) bool {
+		try := taken.Union(NewCpuMask(cpu))
+		v := a.Admits(&CpuUsage{ID: "greedy", Name: "greedy", Exclusive: try})
+		require.True(t, v[0].Exact, "greedy probe cut short")
+		if v[0].Admits {
+			taken = try
+		}
+		return true
+	})
+
+	return taken.Size()
+}
+
+// exclusiveCapacity calls ExclusiveCapacity, failing on error.
+func exclusiveCapacity(t *testing.T, a *Accounting, pool *CpuMask) (int, bool) {
+	t.Helper()
+
+	n, exact, err := a.ExclusiveCapacity(pool)
+	require.NoError(t, err, "capacity of %s", pool)
+
+	return n, exact
+}
+
+// TestExclusiveCapacity pins numbers on the stock accounting: node0 holds
+// 750m on 2 CPUs, CPU 4 is exclusive, and the rest is idle. Each number is
+// also checked against greedy.
+func TestExclusiveCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pool   *CpuMask
+		expect int
+	}{
+		// 750m on 2 CPUs leaves room for 1 whole CPU.
+		{"charged node", testNode0, 1},
+		// No pool inside. The machine has 6 CPUs of room, the node 2 CPUs.
+		{"idle node", testNode1, 2},
+		// 7 free CPUs; node0 keeps one.
+		{"all CPUs", testAllCpus, 6},
+		{"CPU already exclusive", testCpu4, 0},
+		{"idle CPU", testCpu5, 1},
+		{"empty set", NewCpuMask(), 0},
+		// Not a pool; it crosses node0, which caps its half at 1.
+		{"set across a pool", NewCpuMask(1, 2, 3), 3},
+		{"set across a pool, two in it", NewCpuMask(0, 1, 2), 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAccounting(t)
+			before := testAvailable(t, a)
+
+			n, exact := exclusiveCapacity(t, a, tc.pool)
+			require.True(t, exact, "nested pools give exact answer")
+			require.Equal(t, tc.expect, n, "CPUs takeable from %s", tc.pool)
+			require.Equal(t, greedyExclusive(t, a, tc.pool), n, "agrees with greedy")
+			require.Equal(t, before, testAvailable(t, a), "nothing changed")
+		})
+	}
+}
+
+// TestExclusiveCapacityCountsNestedCharges pins the inner term: charges
+// deep in a pool eat its capacity, not only its own charge.
+func TestExclusiveCapacityCountsNestedCharges(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	half := NewCpuMask(0, 1, 2, 3)
+	for _, u := range []*CpuUsage{
+		{ID: "n0", Name: "n0", Shared: testNode0, Charge: 1000},
+		{ID: "n1", Name: "n1", Shared: testNode1, Charge: 1000},
+		{ID: "half", Name: "half", Shared: half, Charge: 1500},
+	} {
+		require.NoError(t, a.insert(u), "add user %q", u.ID)
+	}
+
+	// Each node alone: 1 spare CPU. Half: 4000-3500 = 500m, no whole CPU.
+	n, exact := exclusiveCapacity(t, a, half)
+	require.True(t, exact)
+	require.Equal(t, 0, n, "half has no whole CPU spare")
+	require.Equal(t, greedyExclusive(t, a, half), n)
+
+	// Whole machine: half takes nothing; CPUs 4-7 are free.
+	n, _ = exclusiveCapacity(t, a, testAllCpus)
+	require.Equal(t, 4, n)
+	require.Equal(t, greedyExclusive(t, a, testAllCpus), n)
+
+	// The node alone takes 1; half above caps it at 0.
+	n, _ = exclusiveCapacity(t, a, testNode0)
+	require.Equal(t, 0, n, "ancestor caps nested pool")
+	require.Equal(t, greedyExclusive(t, a, testNode0), n)
+}
+
+// TestExclusiveCapacityKeepsZeroChargeUserAlive pins the choke rule: a pool
+// whose user charges nothing still keeps one CPU.
+func TestExclusiveCapacityKeepsZeroChargeUserAlive(t *testing.T) {
+	a := testAccounting(t)
+	require.NoError(t, a.insert(&CpuUsage{ID: "be", Name: "be", Shared: testNode1}))
+
+	n, exact := exclusiveCapacity(t, a, testNode1)
+	require.True(t, exact)
+	require.Equal(t, 1, n, "zero-charge user keeps one CPU")
+	require.Equal(t, greedyExclusive(t, a, testNode1), n)
+}
+
+// TestExclusiveCapacityOvercommitted pins that an overcommitted accounting
+// admits no take at all, so capacity is 0 everywhere, idle CPUs included.
+func TestExclusiveCapacityOvercommitted(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	require.NoError(t, a.insert(&CpuUsage{
+		ID: "over", Name: "over", Shared: testNode0, Charge: 2500,
+	}))
+
+	n, _ := exclusiveCapacity(t, a, testCpu5)
+	require.Equal(t, 0, n, "nothing admissible while overcommitted")
+	require.Equal(t, greedyExclusive(t, a, testCpu5), n)
+}
+
+func TestExclusiveCapacityRefuses(t *testing.T) {
+	a := testAccounting(t)
+
+	_, _, err := a.ExclusiveCapacity(nil)
+	require.Error(t, err, "nil set")
+
+	_, _, err = a.ExclusiveCapacity(NewCpuMask(7, 8))
+	require.Error(t, err, "CPU 8 outside accounting")
+}
+
+// TestLaminar pins the predicate on declared pools: nested or disjoint pools
+// are laminar, a single crossing pair is not.
+func TestLaminar(t *testing.T) {
+	a := testAccounting(t)
+	require.True(t, a.Laminar(), "nodes inside machine")
+
+	require.NoError(t, a.insert(&CpuUsage{
+		ID: "x", Name: "x", Shared: NewCpuMask(1, 2), Charge: 100,
+	}))
+	require.False(t, a.Laminar(), "1-2 crosses both nodes")
+
+	_, err := a.remove("x")
+	require.NoError(t, err)
+	require.True(t, a.Laminar(), "userless pool gone, laminar again")
+}
+
+// TestExclusiveCapacityNotLaminar pins the fallback: crossing pools
+// give floor(Available/1000), flagged inexact, never below greedy.
+func TestExclusiveCapacityNotLaminar(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	for _, u := range []*CpuUsage{
+		{ID: "a", Name: "a", Shared: NewCpuMask(0, 1, 2), Charge: 1500},
+		{ID: "b", Name: "b", Shared: NewCpuMask(2, 3, 4), Charge: 1500},
+	} {
+		require.NoError(t, a.insert(u), "add user %q", u.ID)
+	}
+	require.False(t, a.Laminar())
+
+	pool := NewCpuMask(0, 1, 2, 3, 4)
+	n, exact := exclusiveCapacity(t, a, pool)
+	require.False(t, exact, "crossing pools give bound only")
+	require.Equal(t, available(t, a, pool)/1000, n, "bound is floor(Available/1000)")
+	require.GreaterOrEqual(t, n, greedyExclusive(t, a, pool), "bound never below max")
+}
+
+// TestExclusiveCapacityJudgesEffectiveSets pins that the answer is exact
+// when declared pools cross but the crossing CPU, now exclusive, leaves
+// the effective sets disjoint, even though Laminar says no.
+func TestExclusiveCapacityJudgesEffectiveSets(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	for _, u := range []*CpuUsage{
+		{ID: "a", Name: "a", Shared: NewCpuMask(0, 1, 2), Charge: 500},
+		{ID: "b", Name: "b", Shared: NewCpuMask(2, 3, 4), Charge: 500},
+		{ID: "x", Name: "x", Exclusive: NewCpuMask(2)},
+	} {
+		require.NoError(t, a.insert(u), "add user %q", u.ID)
+	}
+	require.False(t, a.Laminar(), "declared pools cross at CPU 2")
+
+	n, exact := exclusiveCapacity(t, a, testAllCpus)
+	require.True(t, exact, "effective sets 0-1 and 3-4 are disjoint")
+	require.Equal(t, greedyExclusive(t, a, testAllCpus), n)
+	require.Equal(t, 5, n, "each pool keeps one of its two, 3 idle")
+}
