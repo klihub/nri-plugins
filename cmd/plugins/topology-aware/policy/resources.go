@@ -57,6 +57,8 @@ var (
 
 // Supply represents avaialbe CPU and memory capacity of a node.
 type Supply interface {
+	// LibCpu returns the corresponding LibCpu-based supply.
+	LibCpu() *LibCpuSupply
 	// GetNode returns the node supplying this capacity.
 	GetNode() Node
 	// Clone creates a copy of this supply.
@@ -101,6 +103,8 @@ type Supply interface {
 
 // Request represents CPU and memory resources requested by a container.
 type Request interface {
+	// LibCpu returns the corresponding LibCpu-based request.
+	LibCpu() *LibCpuRequest
 	// GetContainer returns the container requesting CPU capacity.
 	GetContainer() cache.Container
 	// String returns a printable representation of this request.
@@ -135,6 +139,8 @@ type Request interface {
 
 // Grant represents CPU and memory capacity allocated to a container from a node.
 type Grant interface {
+	// LibCpu returns the corresponding LibCpu-based grant.
+	LibCpu() *LibCpuGrant
 	// SetCPUPortion sets the fraction CPU portion for the grant.
 	SetCPUPortion(fraction int)
 	// Clone creates a copy of this grant.
@@ -206,6 +212,7 @@ type Grant interface {
 
 // Score represents how well a supply can satisfy a request.
 type Score interface {
+	LibCpu() *LibCpuOffer // LibCpu-based offer.
 	// Calculate the actual score from the collected parameters.
 	Eval() float64
 	// Supply returns the supply associated with this score.
@@ -230,6 +237,7 @@ type Score interface {
 
 // supply implements our Supply interface.
 type supply struct {
+	libcpu          *LibCpuSupply   // LibCpu-based supply
 	node            Node            // node supplying CPUs and memory
 	isolated        *libcpu.CpuMask // isolated CPUs at this node
 	reserved        *libcpu.CpuMask // reserved CPUs at this node
@@ -242,6 +250,7 @@ var _ Supply = &supply{}
 
 // request implements our Request interface.
 type request struct {
+	libcpu      *LibCpuRequest  // LibCpu-based request
 	container   cache.Container // container for this request
 	full        int             // number of full CPUs requested
 	fraction    int             // amount of fractional CPU requested
@@ -268,6 +277,7 @@ var _ Request = &request{}
 
 // grant implements our Grant interface.
 type grant struct {
+	libcpu         *LibCpuGrant    // LibCpu-based grant
 	container      cache.Container // container CPU is granted to
 	node           Node            // node CPU is supplied from
 	exclusive      *libcpu.CpuMask // exclusive CPUs
@@ -286,6 +296,7 @@ var _ Grant = &grant{}
 
 // score implements our Score interface.
 type score struct {
+	libcpu    *LibCpuOffer              // LibCpu-based offer
 	supply    Supply                    // CPU supply (node)
 	req       Request                   // CPU request (container)
 	mem       *libmem.Offer             // possible memory allocation
@@ -306,6 +317,7 @@ var _ Score = &score{}
 
 func newSupply(n Node, isolated, reserved, sharable *libcpu.CpuMask, grantedReserved int, grantedShared int) Supply {
 	return &supply{
+		libcpu:          n.Policy().libcpu.NewSupply(n),
 		node:            n,
 		isolated:        isolated.Clone(),
 		reserved:        reserved.Clone(),
@@ -313,6 +325,10 @@ func newSupply(n Node, isolated, reserved, sharable *libcpu.CpuMask, grantedRese
 		grantedReserved: grantedReserved,
 		grantedShared:   grantedShared,
 	}
+}
+
+func (cs *supply) LibCpu() *LibCpuSupply {
+	return cs.libcpu
 }
 
 // GetNode returns the node supplying CPU and memory.
@@ -854,7 +870,13 @@ func (p *policy) newRequest(container cache.Container, types libmem.TypeMask) (R
 		}
 	}
 
+	lcr, err := p.libcpu.NewRequest(container)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create libcpu request: %w", err)
+	}
+
 	return &request{
+		libcpu:      lcr,
 		container:   container,
 		full:        full,
 		fraction:    fraction,
@@ -870,6 +892,10 @@ func (p *policy) newRequest(container cache.Container, types libmem.TypeMask) (R
 		pickByHints: pickByHintsPreference(pod, container),
 		irqs:        irqs,
 	}, nil
+}
+
+func (cr *request) LibCpu() *LibCpuRequest {
+	return cr.libcpu
 }
 
 // GetContainer returns the container requesting CPU.
@@ -1040,7 +1066,13 @@ func (cr *request) verifyStrictCPUPreferences(g Grant) error {
 
 // Score collects data for scoring this supply wrt. the given request.
 func (cs *supply) GetScore(req Request) Score {
+	lco, err := cs.libcpu.GetOffer(req.LibCpu())
+	if err != nil {
+		log.Errorf("failed to get libcpu offer for %s: %w", cs.GetNode().Name())
+	}
+
 	score := &score{
+		libcpu: lco,
 		supply: cs,
 		req:    req,
 		prio:   map[cpuPrio]int{},
@@ -1136,8 +1168,7 @@ func (cs *supply) GetScore(req Request) Score {
 	}
 
 	var (
-		o   *libmem.Offer
-		err error
+		o *libmem.Offer
 	)
 
 	if cr.PickByHints() {
@@ -1275,6 +1306,10 @@ func (cs *supply) SliceableCPUs() (*libcpu.CpuMask, error) {
 	return sliceable, nil
 }
 
+func (score *score) LibCpu() *LibCpuOffer {
+	return score.libcpu
+}
+
 // Eval...
 func (score *score) Eval() float64 {
 	return 1.0
@@ -1347,6 +1382,10 @@ func newGrant(n Node, c cache.Container, cpuType cpuType, cpuCls string, exclusi
 		coldStart:  coldstart,
 	}
 	return grant
+}
+
+func (cg *grant) LibCpu() *LibCpuGrant {
+	return cg.libcpu
 }
 
 // SetCPUPortion sets the fractional CPU portion for the grant.

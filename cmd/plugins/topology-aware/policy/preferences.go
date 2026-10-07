@@ -596,6 +596,9 @@ func ParseMemTypePreference(str string) (*Preference, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid memory type %q: %w", str, err)
 	}
+	if coldStartOff {
+		t |= libmem.TypeMaskDRAM
+	}
 	return MemTypePreference(t), nil
 }
 
@@ -1147,7 +1150,9 @@ var PreferenceAnnotations = []AnnotatablePreference{
 			return c.ColdStart, nil
 		},
 		Set: func(c *PreferenceCollector, p *Preference) {
-			c.ColdStart = p
+			if !coldStartOff {
+				c.ColdStart = p
+			}
 		},
 		Parse: ParseDurationPreference,
 	},

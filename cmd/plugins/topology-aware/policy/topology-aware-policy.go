@@ -71,6 +71,7 @@ type policy struct {
 	allocations  allocations               // container pool assignments
 	cpuAllocator cpuallocator.CPUAllocator // CPU allocator used by the policy
 	memAllocator *libmem.Allocator         // memory allocator user by the policy
+	libcpu       *LibCpu                   // libcpu accounting/allocation
 	cpuClasses   *cpuclass.Handler         // CPU class handler (cpufreq, SST/PCT, etc.)
 	metrics      *TopologyAwareMetrics     // metrics provided by this policy
 	irqCnt       int                       // last applied [allocations.]irqCnt
@@ -121,6 +122,7 @@ func (p *policy) Setup(opts *policyapi.BackendOptions) error {
 	if err != nil {
 		return policyError("failed to initialize %s policy: %w", err)
 	}
+	p.libcpu = p.NewLibCpu()
 
 	opt = cfg
 	defaultPrio = cfg.DefaultCPUPriority.Value()

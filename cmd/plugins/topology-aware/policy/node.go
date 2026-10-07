@@ -172,6 +172,7 @@ type node struct {
 	pMem     idset.IDSet // controllers with PMEM attached
 	hbm      idset.IDSet // controllers with HBM attached
 	cpus     *libcpu.CpuMask
+	supply   *LibCpuSupply
 }
 
 // nodeself is used to 'upcast' a generic Node interface to a type-specific one.
@@ -234,6 +235,7 @@ func (n *node) init(p *policy, name string, kind NodeKind, parent Node) {
 	n.mem = idset.NewIDSet()
 	n.pMem = idset.NewIDSet()
 	n.hbm = idset.NewIDSet()
+	n.supply = p.libcpu.NewSupply(n)
 }
 
 // IsNil tests if a node
