@@ -195,6 +195,8 @@
 //     churn of a choice, [Offer.Updates]: the running containers to re-pin.
 //     [Offer.Headroom] is the room the pool would have left, counting the
 //     candidate's own charge and exclusive CPUs.
+//   - [Accounting.ExclusiveCapacity] tells how many CPUs a set can give away
+//     exclusively, for publishing rather than for judging a candidate.
 //
 // The accessors about sets of CPUs serve diagnostics and introspection. A
 // caller using them instead of Admits takes on the probe rules above:
@@ -211,6 +213,64 @@
 //
 // Cost falls in that order. Limit refutes most candidates, one traversal
 // answers for the rest, and offers run on a handful.
+//
+// # Exclusive capacity
+//
+// [Accounting.ExclusiveCapacity] answers how many CPUs a single exclusive-only
+// usage could take from a set, whichever ones it picks. Publish this when
+// exclusive CPUs are counted rather than named, as by DRA shared counters.
+// Answers for different sets are not independent: a socket's includes its
+// nodes', and a take from one set eats into every set it meets.
+//
+// The capacity rule is Hall's condition for spreading the shared charges over
+// the remaining CPUs: every union T of pools needs charge(T) ≤ 1000·|T|. Taking
+// a set Y exclusively removes 1000·|T ∩ Y| from every T it touches. So Y is
+// admissible exactly when, for every constraint set T of the current
+// accounting:
+//
+//	|Y ∩ T| ≤ k(T) = ⌊Limit(T) / 1000⌋
+//
+// Well-formedness adds k(E(Q)) ≤ |E(Q)| − 1 for a pool Q with users, which
+// must keep a CPU. The T are today's sets, before the take, so shrinking
+// effective sets cause no circularity. The question is the largest Y ⊆ E(P)
+// within every k(T).
+//
+// In general this is NP-hard. Give each pool a tiny charge on an arbitrary
+// subset of P. Each pool must keep a CPU, so the maximum take is |P| minus a
+// minimum hitting set of the pools. When the pools overlap, ExclusiveCapacity
+// answers ⌊Available(P) / 1000⌋ and reports it inexact. P and every union
+// containing it are constraint sets, so this is an upper bound, even when the
+// enumeration is cut short.
+//
+// It is exact and cheap if the effective sets are laminar: any two are either
+// nested or disjoint. Then:
+//
+//   - The connected unions are just the pools, so the constraint sets form the
+//     pool tree.
+//   - The constraint sets cut down to P stay laminar, so P need not be a pool
+//     nor nest with the pools. This matters because userless pools are
+//     dropped, yet an idle socket or node still has capacity.
+//   - Constraints |Y ∩ T| ≤ k(T) over a laminar family form a laminar matroid,
+//     so the maximum has a closed form.
+//
+// The closed form, bottom-up over the constraint sets cut down to E(P), with
+// E(P) itself as the root:
+//
+//	inner(T)   = min( k(T), Σ inner(child) + |T CPUs in no child| )
+//	maxTake(P) = inner(E(P))
+//
+// Every pool containing P cuts down to E(P), so the root's k is the minimum
+// over those pools. Several pools cutting down to one set contribute their
+// smallest k. That is one pass over the pools and a walk of a small tree,
+// cheaper than a single Admits. In a matroid, adding CPUs greedily while the
+// set stays admissible also reaches the maximum. An overcommitted accounting
+// admits no take, so the answer there is 0.
+//
+// Exactness is judged on the effective sets. [Accounting.Laminar] reports on
+// the declared sets instead. Declared sets which nest give effective sets which
+// nest, whatever goes exclusive, so a laminar accounting stays exact. The
+// converse does not hold: declared pools crossing only on CPUs since taken
+// exclusively have disjoint effective sets, and are exact too.
 //
 // # Exactness and truncation
 //

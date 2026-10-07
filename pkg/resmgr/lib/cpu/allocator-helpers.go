@@ -14,7 +14,12 @@
 
 package libcpu
 
-import "fmt"
+import (
+	"cmp"
+	"errors"
+	"fmt"
+	"slices"
+)
 
 // Verdict is what [Accounting.Admits] answers about one candidate usage.
 type Verdict struct {
@@ -184,4 +189,157 @@ func (a *Accounting) Headroom(candidates ...*CpuUsage) ([]int, bool, error) {
 	room, exact := a.AvailableEach(pools...)
 
 	return room, exact, nil
+}
+
+// ExclusiveCapacity returns the most CPUs a single exclusive-only usage could
+// take from the given set now, whichever it picks, and whether that is exact;
+// if not, it is an upper bound. The set need not be a pool, but must lie
+// inside the accounting. The answer is exact while the pools' effective sets
+// are laminar, see [Accounting.Laminar], and 0 on an overcommitted
+// accounting. Nothing is altered.
+func (a *Accounting) ExclusiveCapacity(pool *CpuMask) (int, bool, error) {
+	if pool == nil {
+		return 0, false, errors.New("exclusive capacity: nil set of CPUs")
+	}
+	if outside := pool.Difference(a.cpus); !outside.IsEmpty() {
+		return 0, false, fmt.Errorf("exclusive capacity: CPUs %s outside accounting",
+			outside)
+	}
+
+	caps, ok := a.exclusiveCaps()
+	if !ok {
+		// Pools cross: fall back to a bound which survives a cutoff.
+		avail, _ := a.Available(pool)
+		return max(avail, 0) / 1000, false, nil
+	}
+
+	return innerCap(caps, pool.Difference(a.exclusive)), true, nil
+}
+
+// exclusiveCap is a constraint set with the most CPUs a take may hit.
+type exclusiveCap struct {
+	cpus *CpuMask
+	cap  int
+}
+
+// exclusiveCaps returns the cap of every distinct effective pool set, and
+// whether those sets are laminar. A cap is the whole CPUs of limit left, at
+// most one less than the size for a pool with users. A negative cap means
+// overcommitted.
+func (a *Accounting) exclusiveCaps() ([]exclusiveCap, bool) {
+	var (
+		charge = chargeIn(a.exclusive, a.charged())
+		index  = make(map[string]int, len(a.pools))
+		caps   = make([]exclusiveCap, 0, len(a.pools))
+		sets   = make([]*CpuMask, 0, len(a.pools))
+	)
+
+	for _, p := range a.pools {
+		eff := p.eff()
+		if eff.IsEmpty() {
+			continue
+		}
+
+		// eff has no exclusive CPUs: capacity minus charges.
+		limit := 1000*eff.Size() - charge(eff)
+		c := limit / 1000
+		if limit < 0 && limit%1000 != 0 {
+			c-- // floor, not truncate
+		}
+		if len(p.users) > 0 {
+			c = min(c, eff.Size()-1)
+		}
+
+		if i, ok := index[eff.Key()]; ok {
+			caps[i].cap = min(caps[i].cap, c)
+			continue
+		}
+		index[eff.Key()] = len(caps)
+		caps = append(caps, exclusiveCap{cpus: eff, cap: c})
+		sets = append(sets, eff)
+	}
+
+	return caps, laminar(sets)
+}
+
+// innerCap returns the most CPUs takeable from free under laminar caps, by
+// the closed form in the package documentation, or 0 if any cap is negative.
+func innerCap(caps []exclusiveCap, free *CpuMask) int {
+	type node struct {
+		cpus       *CpuMask
+		cap, inner int
+	}
+
+	nodes := []node{{cpus: free, cap: free.Size()}}
+	index := map[string]int{free.Key(): 0}
+
+	for _, c := range caps {
+		if c.cap < 0 {
+			return 0
+		}
+		cut := c.cpus.Intersection(free)
+		if cut.IsEmpty() {
+			continue
+		}
+		if i, ok := index[cut.Key()]; ok {
+			nodes[i].cap = min(nodes[i].cap, c.cap)
+			continue
+		}
+		index[cut.Key()] = len(nodes)
+		nodes = append(nodes, node{cpus: cut, cap: c.cap})
+	}
+
+	// Smallest first, so children precede parents. Only the root has its
+	// size, so it comes last.
+	slices.SortFunc(nodes, func(a, b node) int {
+		return cmp.Compare(a.cpus.Size(), b.cpus.Size())
+	})
+
+	// Done nodes with no parent yet. Each new node adopts those inside it.
+	var tops []node
+	for _, n := range nodes {
+		took, covered := 0, 0
+		rest := tops[:0]
+		for _, t := range tops {
+			if t.cpus.IsSubsetOf(n.cpus) {
+				took += t.inner
+				covered += t.cpus.Size()
+			} else {
+				rest = append(rest, t)
+			}
+		}
+		n.inner = min(n.cap, took+n.cpus.Size()-covered)
+		tops = append(rest, n)
+	}
+
+	return tops[len(tops)-1].inner
+}
+
+// Laminar reports whether the declared pools nest: any two are nested or
+// disjoint. Then [Accounting.ExclusiveCapacity] is exact whatever goes
+// exclusive. False does not mean inexact. The answer can change as users
+// come and go, since userless pools are dropped.
+func (a *Accounting) Laminar() bool {
+	sets := make([]*CpuMask, 0, len(a.pools))
+	for _, p := range a.pools {
+		if !p.cpus.IsEmpty() {
+			sets = append(sets, p.cpus)
+		}
+	}
+
+	return laminar(sets)
+}
+
+// laminar reports whether any two of the given sets are nested or
+// disjoint. It checks pairwise, as pools are few.
+func laminar(sets []*CpuMask) bool {
+	for i, s := range sets {
+		for _, t := range sets[i+1:] {
+			if s.Intersects(t) && !s.IsSubsetOf(t) && !t.IsSubsetOf(s) {
+				return false
+			}
+		}
+	}
+
+	return true
 }
