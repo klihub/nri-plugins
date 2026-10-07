@@ -628,10 +628,38 @@ func fuzzVerify(t *testing.T, a *Accounting, m *fuzzModel, step int, op string) 
 	}
 
 	requireTruncatedBounds(t, a, probes, each, step, op)
+	requireExclusiveCapacity(t, a, probes[step%len(probes)], step, op)
 
 	requireChargeIdentity(t, a)
 	requireEffectiveCache(t, a)
 	requireNobodyChoked(t, a)
+}
+
+// requireExclusiveCapacity checks ExclusiveCapacity of probe against a
+// greedy take via Admits, which hits the true max when constraints are
+// laminar. One rotating probe per step, as greedy costs an Admits per CPU.
+func requireExclusiveCapacity(t *testing.T, a *Accounting, probe *CpuMask, step int, op string) {
+	n, exact, err := a.ExclusiveCapacity(probe)
+	require.NoError(t, err, "step %d, %s: exclusive capacity of %s", step, op, probe)
+
+	greedy := greedyExclusive(t, a, probe)
+	if exact {
+		require.Equal(t, greedy, n,
+			"step %d, %s: exclusive capacity of %s, greedy took", step, op, probe)
+	} else {
+		require.GreaterOrEqual(t, n, greedy,
+			"step %d, %s: exclusive bound of %s below greedy", step, op, probe)
+	}
+
+	// Declared nesting keeps effective nesting.
+	if a.Laminar() {
+		require.True(t, exact, "step %d, %s: laminar yet inexact", step, op)
+	}
+
+	// The probe's own limit and every union over it bound a take.
+	avail, _ := a.Available(probe)
+	require.LessOrEqual(t, n, max(avail, 0)/1000,
+		"step %d, %s: exclusive capacity of %s over Available", step, op, probe)
 }
 
 // requireTruncatedBounds checks a traversal cut short at maxImplicitPools
