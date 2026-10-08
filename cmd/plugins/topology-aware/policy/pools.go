@@ -421,6 +421,7 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 	var (
 		pool  Node
 		offer *libmem.Offer
+		score Score
 	)
 
 	request, err := p.newRequest(container, p.memAllocator.Masks().AvailableTypes())
@@ -442,6 +443,7 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 			return nil, policyError("failed to get offer for request %s: %v", request, err)
 		}
 		offer = o
+		score = pool.FreeSupply().GetScore(request)
 	} else {
 		affinity, err := p.calculatePoolAffinities(request.GetContainer())
 
@@ -486,13 +488,32 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 		if offer == nil {
 			return nil, policyError("failed to get offer for request %s", request)
 		}
+		score = scores[pool.NodeID()]
 	}
 
 	supply := pool.FreeSupply()
-	grant, updates, err := supply.Allocate(request, offer)
+	g, updates, err := supply.Allocate(request, offer)
 	if err != nil {
 		return nil, policyError("failed to allocate %s from %s: %v",
 			request, supply.DumpAllocatable(), err)
+	}
+
+	if o := score.LibCpu(); o != nil {
+		lcg, lcu, err := o.Commit()
+		if err != nil {
+			log.Errorf("failed to commit LibCpu-offer: %v", err)
+		}
+		if g != nil {
+			log.Infof("LibCpu-grant: exclusive %q, shared %q, %d updates",
+				lcg.ExclusiveCpus(), lcg.SharedCpus(), len(lcu.mem))
+			log.Infof("       grant: exclusive %q, shared %q, %d updates",
+				g.ExclusiveCPUs(), g.SharedCPUs(), len(updates))
+		}
+		g.(*grant).libcpu = lcg
+	} else {
+		log.Errorf("LibCpu-grant: nil")
+		log.Infof("       grant: exclusive %q, shared %q, %d updates",
+			g.ExclusiveCPUs(), g.SharedCPUs(), len(updates))
 	}
 
 	for id, z := range updates {
@@ -509,12 +530,12 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 	}
 
 	log.Debugf("allocated req '%s' to memory zone %s", container.PrettyName(),
-		grant.GetMemoryZone())
+		g.GetMemoryZone())
 
-	p.allocations.addGrant(grant)
+	p.allocations.addGrant(g)
 	p.saveAllocations()
 
-	return grant, nil
+	return g, nil
 }
 
 // setPreferredCpusetCpus pins container's CPUs according to what has been

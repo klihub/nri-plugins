@@ -122,7 +122,6 @@ func (p *policy) Setup(opts *policyapi.BackendOptions) error {
 	if err != nil {
 		return policyError("failed to initialize %s policy: %w", err)
 	}
-	p.libcpu = p.NewLibCpu()
 
 	opt = cfg
 	defaultPrio = cfg.DefaultCPUPriority.Value()
@@ -605,6 +604,11 @@ func (p *policy) initialize() error {
 
 	if err := p.checkConstraints(); err != nil {
 		return err
+	}
+
+	p.libcpu = p.NewLibCpu()
+	if p.libcpu == nil {
+		panic("failed to initialize libcpu")
 	}
 
 	if err := p.buildPoolsByTopology(); err != nil {

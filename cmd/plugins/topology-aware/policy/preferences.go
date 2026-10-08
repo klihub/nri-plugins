@@ -715,7 +715,7 @@ func (p *Preference) SchedulingClassValue() *cfgapi.SchedulingClass {
 	return p.Value.SchedulingClass
 }
 
-// CpuClassValue returns the CPU class value of the preference. For a nil
+// CpuLevelValue returns the CPU class value of the preference. For a nil
 // preference the undefined topology level is returned.
 func (p *Preference) CpuLevelValue() cfgapi.CPUTopologyLevel {
 	if p == nil {

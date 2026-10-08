@@ -50,6 +50,36 @@ func (p *policy) getMemOffer(pool Node, req Request) (*libmem.Offer, error) {
 	return o, err
 }
 
+func (p *policy) getMemOfferForLibCpu(pool Node, req *LibCpuRequest) (*libmem.Offer, error) {
+	var (
+		zone libmem.NodeMask
+		mtyp libmem.TypeMask
+		ctr  = req.ctr
+	)
+
+	if req.opt.PreserveMemory.BoolValue() {
+		zone = libmem.NewNodeMask(pool.GetMemset(memoryAll).Members()...)
+		mtyp = p.memAllocator.ZoneType(zone)
+	} else {
+		memType := req.opt.MemoryType.MemTypeValue()
+		zone = libmem.NewNodeMask(pool.GetMemset(memoryType(memType)).Members()...)
+		mtyp = libmem.TypeMask(memType)
+	}
+
+	o, err := p.memAllocator.GetOffer(
+		libmem.ContainerWithTypes(
+			ctr.GetID(),
+			ctr.PrettyName(),
+			string(ctr.GetQOSClass()),
+			req.opt.MemoryRequest,
+			zone,
+			mtyp,
+		),
+	)
+
+	return o, err
+}
+
 func (p *policy) getMemOfferByHints(pool Node, req Request) (*libmem.Offer, error) {
 	ctr := req.GetContainer()
 

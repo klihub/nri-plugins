@@ -1068,7 +1068,12 @@ func (cr *request) verifyStrictCPUPreferences(g Grant) error {
 func (cs *supply) GetScore(req Request) Score {
 	lco, err := cs.libcpu.GetOffer(req.LibCpu())
 	if err != nil {
-		log.Errorf("failed to get libcpu offer for %s: %w", cs.GetNode().Name())
+		log.Errorf("failed to get libcpu offer for %s: %v", cs.GetNode().Name(), err)
+	} else {
+		if lco != nil && lco.cpu != nil {
+			log.Debugf("LibCpu-offer: got offer with CPUs %s and %d related updates",
+				lco.cpu.Cpus(), len(lco.cpu.Updates()))
+		}
 	}
 
 	score := &score{
@@ -1571,6 +1576,25 @@ func (cg *grant) Release() {
 		log.Errorf("releasing memory for %s failed: %v", cg.container.PrettyName(), err)
 	}
 	cg.StopTimer()
+
+	updates, err := cg.GetCPUNode().Policy().libcpu.account.Release(cg.container.GetID())
+	if err != nil {
+		log.Errorf("failed relase LibCpu-allocation: %v", err)
+	} else {
+		log.Infof("released LibCpu allocation for %s, %d updates",
+			cg.container.PrettyName(), len(updates))
+	}
+
+	if cg.libcpu != nil {
+		updates, err := cg.libcpu.Release()
+		if err != nil {
+			log.Errorf("failed relase LibCpu-allocation: %v", err)
+		} else {
+			log.Infof("released LibCpu allocation for %s, %d updates",
+				cg.container.PrettyName(), len(updates))
+		}
+	}
+
 }
 
 func (cg *grant) ReallocMemory(types libmem.TypeMask) error {

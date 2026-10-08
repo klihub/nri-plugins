@@ -15,43 +15,16 @@
 package topologyaware
 
 import (
-	"github.com/containers/nri-plugins/pkg/resmgr/cache"
+	"fmt"
+
+	"github.com/containers/nri-plugins/pkg/agent/podresapi"
 	libcpu "github.com/containers/nri-plugins/pkg/resmgr/lib/cpu"
-	libmem "github.com/containers/nri-plugins/pkg/resmgr/lib/memory"
+	"github.com/containers/nri-plugins/pkg/topology"
 )
 
 type LibCpu struct {
 	policy  *policy
 	account *libcpu.Accounting
-}
-
-type LibCpuSupply struct {
-	lib  *LibCpu
-	node Node
-}
-
-type LibCpuRequest struct {
-	lib *LibCpu
-	ctr cache.Container
-	opt *LibCpuOptions
-}
-
-type LibCpuOptions struct {
-	*Preferences
-}
-
-type LibCpuOffer struct {
-	req    *LibCpuRequest
-	supply *LibCpuSupply
-	cpu    *libcpu.Offer
-	mem    *libmem.Offer
-}
-
-type LibCpuGrant struct {
-	lib  *LibCpu
-	node Node
-	cpu  *libcpu.CpuMask
-	mem  *libmem.NodeMask
 }
 
 func (p *policy) NewLibCpu() *LibCpu {
@@ -61,53 +34,93 @@ func (p *policy) NewLibCpu() *LibCpu {
 	}
 }
 
-func (lib *LibCpu) NewSupply(node Node) *LibCpuSupply {
-	return &LibCpuSupply{
-		lib:  lib,
-		node: node,
+func (lib *LibCpu) AllowedCpus() *libcpu.CpuMask {
+	return lib.policy.allowed
+}
+
+func (lib *LibCpu) ReservedCpus() *libcpu.CpuMask {
+	return lib.policy.reserved
+}
+
+func (lib *LibCpu) IsolatedCpus() *libcpu.CpuMask {
+	return lib.policy.isolated
+}
+
+func (lib *LibCpu) ExclusiveCpus() *libcpu.CpuMask {
+	return lib.account.ExclusiveCpus()
+}
+
+func (lib *LibCpu) TakeCpu(from *libcpu.CpuMask, cnt int, prio CpuPrio) (*libcpu.CpuMask, error) {
+	if lib == nil {
+		panic("nil lib")
 	}
-}
 
-func (s *LibCpuSupply) Node() Node {
-	return s.node
-}
-
-func (s *LibCpuSupply) IsolatedCpus() *libcpu.CpuMask {
-	return s.node.AllowedCpus().Intersection(s.lib.policy.isolated)
-}
-
-func (s *LibCpuSupply) ReservedCpus() *libcpu.CpuMask {
-	return s.node.AllowedCpus().Intersection(s.lib.policy.reserved)
-}
-
-func (s *LibCpuSupply) SharedCpus() *libcpu.CpuMask {
-	return s.node.AllowedCpus().Difference(s.IsolatedCpus()).Difference(s.ReservedCpus())
-}
-
-func (s *LibCpuSupply) Clone() *LibCpuSupply {
-	return &LibCpuSupply{
-		lib:  s.lib,
-		node: s.node,
+	if from.Size() < cnt {
+		return nil, fmt.Errorf("not enough CPUs available")
 	}
+
+	return lib.policy.cpuAllocator.AllocateCpus(from, cnt, prio.Value().Option())
 }
 
-func (s *LibCpuSupply) GetOffer(req *LibCpuRequest) (*LibCpuOffer, error) {
-	return &LibCpuOffer{
-		supply: s,
-		req:    req,
-	}, nil
-}
+func (lib *LibCpu) TakeCpuByHints(from *libcpu.CpuMask, cnt int, prio CpuPrio, all topology.Hints) ([]*libcpu.CpuMask, error) {
+	if lib == nil {
+		panic("nil lib")
+	}
 
-func (lib *LibCpu) NewRequest(ctr cache.Container) (*LibCpuRequest, error) {
-	prefs, err := lib.policy.GetContainerPreferences(ctr)
+	var (
+		alternatives []*libcpu.CpuMask
+		free         = from.Clone()
+	)
+
+	hints := []*libcpu.CpuMask{}
+	for provider, h := range all {
+		if podresapi.IsPodResourceHint(provider) {
+			hints = append(hints, libcpu.MustParseCpuMask(h.CPUs))
+		}
+	}
+
+	if len(hints) > cnt {
+		total := cnt
+		perHint := 1
+		if len(hints) < total && total%len(hints) == 0 {
+			perHint = total / len(hints)
+		}
+
+		cpus := libcpu.NewCpuMask()
+		for _, hcpu := range hints {
+			pick, err := lib.TakeCpu(free.Intersection(hcpu), perHint, prio)
+			if err != nil {
+				log.Errorf("failed to take CPUs by topology hints: %v", err)
+				cpus = nil
+				break
+			}
+			cpus = cpus.Union(pick)
+			free = free.Difference(pick)
+			total -= perHint
+		}
+
+		if cpus != nil {
+			if total > 0 {
+				pick, err := lib.TakeCpu(free, total, prio)
+				if err != nil {
+					log.Errorf("failed to remaining take CPUs by topology hints: %v", err)
+					cpus = nil
+				} else {
+					cpus = cpus.Union(pick)
+				}
+			}
+		}
+
+		if cpus != nil {
+			alternatives = []*libcpu.CpuMask{cpus}
+		}
+	}
+
+	cpus, err := lib.TakeCpu(from, cnt, prio)
 	if err != nil {
-		return nil, err
+		log.Errorf("failed to take %d CPUs from %s without topology hints: %v",
+			cnt, from, err)
 	}
-	return &LibCpuRequest{
-		lib: lib,
-		ctr: ctr,
-		opt: &LibCpuOptions{
-			Preferences: prefs,
-		},
-	}, nil
+
+	return append(alternatives, cpus), nil
 }
