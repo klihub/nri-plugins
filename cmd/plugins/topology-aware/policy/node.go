@@ -154,6 +154,8 @@ type Node interface {
 	AllowedCpus() *libcpu.CpuMask
 	IsolatedCpus() *libcpu.CpuMask
 	ReservedCpus() *libcpu.CpuMask
+
+	LibCpu() *LibCpuSupply
 }
 
 // node represents data common to all node types.
@@ -172,7 +174,7 @@ type node struct {
 	pMem     idset.IDSet // controllers with PMEM attached
 	hbm      idset.IDSet // controllers with HBM attached
 	cpus     *libcpu.CpuMask
-	supply   *LibCpuSupply
+	libcpu   *LibCpuSupply
 }
 
 // nodeself is used to 'upcast' a generic Node interface to a type-specific one.
@@ -235,7 +237,7 @@ func (n *node) init(p *policy, name string, kind NodeKind, parent Node) {
 	n.mem = idset.NewIDSet()
 	n.pMem = idset.NewIDSet()
 	n.hbm = idset.NewIDSet()
-	n.supply = p.libcpu.NewSupply(n)
+	n.libcpu = p.libcpu.NewSupply(n)
 }
 
 // IsNil tests if a node
@@ -491,6 +493,10 @@ func (n *node) GetMemoryType() memoryType {
 func (n *node) HasMemoryType(reqType memoryType) bool {
 	nodeType := n.GetMemoryType()
 	return (nodeType & reqType) == reqType
+}
+
+func (n *node) LibCpu() *LibCpuSupply {
+	return n.libcpu
 }
 
 // NewNumaNode create a node for a CPU socket.

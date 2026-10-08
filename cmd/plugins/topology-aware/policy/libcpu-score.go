@@ -137,7 +137,7 @@ func (s *LibCpuScore) Lib() *LibCpu {
 
 type LibCpuScoreSortFunc func(a, b *LibCpuScore) int
 
-func Sorter(fn []LibCpuScoreSortFunc) LibCpuScoreSortFunc {
+func LibCpuPoolSorter(fn []LibCpuScoreSortFunc) LibCpuScoreSortFunc {
 	return func(a, b *LibCpuScore) int {
 		switch {
 		case a == nil && b == nil:
@@ -503,7 +503,7 @@ func ScoreNormalContainer(a, b *LibCpuScore) int {
 		return v
 	}
 
-	return ScoreByNodeId(a, b)
+	return 0
 }
 
 func ScoreByNodeId(a, b *LibCpuScore) int {

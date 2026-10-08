@@ -273,6 +273,13 @@ func (p *policy) allocateResources(container cache.Container, poolHint string) e
 		return policyError("failed to allocate resources for %s: %v",
 			container.PrettyName(), err)
 	}
+
+	_, _, err = p.libCpuAllocate(container, poolHint)
+	if err != nil {
+		return policyError("failed to libcpu-allocate resources for %s: %v",
+			container.PrettyName(), err)
+	}
+
 	p.applyGrant(grant)
 	p.updateSharedAllocations(&grant)
 
@@ -291,6 +298,10 @@ func (p *policy) ReleaseResources(container cache.Container) error {
 
 	if grant, found := p.releasePool(container); found {
 		p.updateSharedAllocations(&grant)
+	}
+
+	if _, err := p.libCpuRelease(container); err != nil {
+		log.Errorf("%v", err)
 	}
 
 	p.root.Dump("<post-release>")

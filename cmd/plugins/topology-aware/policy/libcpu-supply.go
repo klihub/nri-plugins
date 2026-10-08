@@ -98,6 +98,10 @@ func (s *LibCpuSupply) PickExclusiveCpus(req *LibCpuRequest) ([]*libcpu.CpuMask,
 	}
 
 	free := s.SharedCpus().Difference(s.lib.ExclusiveCpus())
+
+	log.Debugf("libcpu: trying to pick %d exclusive CPUs from %s pool %s (free %s)",
+		req.opt.ExclusiveCpu, s.node.Name(), s.SharedCpus(), free)
+
 	if free.Size() >= req.opt.ExclusiveCpu {
 		cpus, err := s.lib.TakeCpuByHints(
 			free,

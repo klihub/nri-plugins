@@ -103,6 +103,11 @@ func (p *policy) GetContainerPreferences(ctr cache.Container) (*Preferences, err
 		},
 	}
 
+	log.Debugf("preference set CPU request = %d", c.CpuRequest)
+	log.Debugf("preference set CPU limit = %d", c.CpuLimit)
+	log.Debugf("preference set memory request = %d", c.MemoryRequest)
+	log.Debugf("preference set memory limit = %d", c.MemoryLimit)
+
 	c.SharedCpu = c.CpuRequest
 	if c.QoSClass == corev1.PodQOSGuaranteed && c.SharedCpu%1000 == 0 {
 		c.ExclusiveCpu = c.SharedCpu / 1000
@@ -117,7 +122,15 @@ func (p *policy) GetContainerPreferences(ctr cache.Container) (*Preferences, err
 		return nil, err
 	}
 
-	return c.resolve()
+	prefs, err := c.resolve()
+	if err != nil {
+		return nil, err
+	}
+
+	log.Debugf("preference set exclusive CPU = %d", prefs.ExclusiveCpu)
+	log.Debugf("preference set shared CPU = %dm", prefs.SharedCpu)
+
+	return prefs, nil
 }
 
 // Query configuration and effective container annotations for preferences.

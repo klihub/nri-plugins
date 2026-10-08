@@ -17,6 +17,7 @@ package topologyaware
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/containers/nri-plugins/pkg/lib/hardware"
@@ -421,7 +422,6 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 	var (
 		pool  Node
 		offer *libmem.Offer
-		score Score
 	)
 
 	request, err := p.newRequest(container, p.memAllocator.Masks().AvailableTypes())
@@ -443,7 +443,6 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 			return nil, policyError("failed to get offer for request %s: %v", request, err)
 		}
 		offer = o
-		score = pool.FreeSupply().GetScore(request)
 	} else {
 		affinity, err := p.calculatePoolAffinities(request.GetContainer())
 
@@ -488,7 +487,6 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 		if offer == nil {
 			return nil, policyError("failed to get offer for request %s", request)
 		}
-		score = scores[pool.NodeID()]
 	}
 
 	supply := pool.FreeSupply()
@@ -498,23 +496,8 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 			request, supply.DumpAllocatable(), err)
 	}
 
-	if o := score.LibCpu(); o != nil {
-		lcg, lcu, err := o.Commit()
-		if err != nil {
-			log.Errorf("failed to commit LibCpu-offer: %v", err)
-		}
-		if g != nil {
-			log.Infof("LibCpu-grant: exclusive %q, shared %q, %d updates",
-				lcg.ExclusiveCpus(), lcg.SharedCpus(), len(lcu.mem))
-			log.Infof("       grant: exclusive %q, shared %q, %d updates",
-				g.ExclusiveCPUs(), g.SharedCPUs(), len(updates))
-		}
-		g.(*grant).libcpu = lcg
-	} else {
-		log.Errorf("LibCpu-grant: nil")
-		log.Infof("       grant: exclusive %q, shared %q, %d updates",
-			g.ExclusiveCPUs(), g.SharedCPUs(), len(updates))
-	}
+	log.Infof("       grant: exclusive %q, shared %q, %d updates",
+		g.ExclusiveCPUs(), g.SharedCPUs(), len(updates))
 
 	for id, z := range updates {
 		g, ok := p.allocations.getGrant(id)
@@ -536,6 +519,84 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 	p.saveAllocations()
 
 	return g, nil
+}
+
+// Pick a pool and allocate resource from it to the container.
+func (p *policy) libCpuAllocate(ctr cache.Container, poolHint string) (*LibCpuGrant, *LibCpuUpdates, error) {
+	var (
+		req    *LibCpuRequest
+		offers []*LibCpuScore
+		err    error
+	)
+
+	req, err = p.libcpu.NewRequest(ctr)
+	if err != nil {
+		return nil, nil, policyError("failed to create libcpu request for %s: %w",
+			ctr.PrettyName(), err)
+	}
+
+	affinities, err := p.calculatePoolAffinities(ctr)
+	if err != nil {
+		return nil, nil, policyError("failed to calculate affinity for %s: %w",
+			ctr.PrettyName(), err)
+	}
+
+	for _, pool := range p.pools {
+		o, err := pool.LibCpu().GetOffer(req)
+		if err != nil {
+			log.Warnf("failed to get %s libcpu offer for %s: %v",
+				pool.Name(), ctr.PrettyName(), err)
+			continue
+		}
+		if poolHint != "" && pool.Name() == poolHint {
+			log.Infof("using hinted pool %q for %s", poolHint, ctr.PrettyName())
+			offers = []*LibCpuScore{o.Score(affinities)}
+			break
+		}
+		offers = append(offers, o.Score(affinities))
+	}
+
+	if len(offers) == 0 {
+		return nil, nil,
+			policyError("no suitable libcpu offer found for %s", ctr.PrettyName())
+	}
+
+	sorter := LibCpuPoolSorter(
+		[]LibCpuScoreSortFunc{
+			ScoreReservedContainer,
+			ScoreByCapacity,
+			ScoreByAffinity,
+			ScoreByHints,
+			ScoreByMemOfferMatch,
+			ScoreByCpuBurstability,
+			ScoreByMemOffer,
+			ScoreByCpuClassHints,
+			ScoreByCpuPrio,
+			ScoreByNodeDepth,
+			ScoreNormalContainer,
+			ScoreByNodeId,
+		},
+	)
+
+	slices.SortFunc(offers, sorter)
+	picked := offers[0]
+
+	o := picked
+	if o == nil {
+		return nil, nil,
+			policyError("no suitable libcpu offer found for %s", ctr.PrettyName())
+	}
+
+	g, u, err := o.Commit()
+	if err != nil {
+		return nil, nil,
+			policyError("failed to commit libcpu offer for %s: %w", ctr.PrettyName(), err)
+	}
+
+	log.Infof("LibCpu-grant: exclusive %q, shared %q, %d CPU updates, %d memory updates",
+		g.ExclusiveCpus(), g.SharedCpus(), len(u.cpu), len(u.mem))
+
+	return g, u, nil
 }
 
 // setPreferredCpusetCpus pins container's CPUs according to what has been
@@ -689,6 +750,17 @@ func (p *policy) releasePool(container cache.Container) (Grant, bool) {
 	p.resetCpuClass(container.PrettyName(), grant.ExclusiveCPUs())
 
 	return grant, true
+}
+
+func (p *policy) libCpuRelease(ctr cache.Container) (*LibCpuUpdates, error) {
+	u, err := p.libcpu.account.Release(ctr.GetID())
+	if err != nil {
+		return nil, fmt.Errorf("failed to release libcpu-grant for %s: %w",
+			ctr.PrettyName(), err)
+	}
+	return &LibCpuUpdates{
+		cpu: u,
+	}, nil
 }
 
 // Update shared allocations effected by agrant.

@@ -45,21 +45,22 @@ func (o *LibCpuOffer) Commit() (*LibCpuGrant, *LibCpuUpdates, error) {
 		return nil, nil, fmt.Errorf("failed to commit libcpu offer: %w", err)
 	}
 
-	mem, memUpdates, err := o.mem.Commit()
-	if err != nil {
-		o.supply.lib.account.Release(o.req.ctr.GetID())
-		return nil, nil, fmt.Errorf("failed to commit libmem offer: %w", err)
-	}
+	/*
+		mem, memUpdates, err := o.mem.Commit()
+		if err != nil {
+			o.supply.lib.account.Release(o.req.ctr.GetID())
+			return nil, nil, fmt.Errorf("failed to commit libmem offer: %w", err)
+		}*/
 
 	return &LibCpuGrant{
 			lib:  o.supply.lib,
 			node: o.supply.node,
 			ctr:  o.req.ctr,
 			cpu:  cpu,
-			mem:  mem,
+			//mem:  mem,
 		}, &LibCpuUpdates{
 			cpu: cpuChanges,
-			mem: memUpdates,
+			//mem: memUpdates,
 		}, nil
 }
 

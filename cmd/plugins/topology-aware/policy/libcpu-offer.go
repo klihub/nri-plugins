@@ -65,7 +65,11 @@ func (s *LibCpuSupply) GetOffer(req *LibCpuRequest) (*LibCpuOffer, error) {
 			return nil, fmt.Errorf("reserved CPUs with non-zero exclusive CPUs")
 		}
 
+		log.Debugf("libcpu: trying to take %s reserved CPU offer...",
+			s.node.Name())
+
 		if !s.ReservedCpus().IsEmpty() {
+			log.Debugf("libcpu: reserved CPUs.")
 			u = &libcpu.CpuUsage{
 				ID:     req.ctr.GetID(),
 				Name:   req.ctr.GetName(),
@@ -77,6 +81,7 @@ func (s *LibCpuSupply) GetOffer(req *LibCpuRequest) (*LibCpuOffer, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to get reserved CPU offer: %w", err)
 			}
+			break
 		}
 		fallthrough
 
@@ -116,12 +121,19 @@ func (s *LibCpuSupply) GetOffer(req *LibCpuRequest) (*LibCpuOffer, error) {
 				break
 			}
 		}
+
+		if o == nil {
+			return nil, fmt.Errorf("failed to get any CPU offer for exclusive %s: %w",
+				req.opt.ExclusiveCpu, err)
+		}
 	}
 
-	mem, err := s.lib.policy.getMemOfferForLibCpu(s.node, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get memory offer for LibCpu request: %w", err)
-	}
+	/*
+		mem, err := s.lib.policy.getMemOfferForLibCpu(s.node, req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get memory offer for LibCpu request: %w", err)
+		}*/
+	var mem *libmem.Offer
 
 	return &LibCpuOffer{
 		req:    req,
