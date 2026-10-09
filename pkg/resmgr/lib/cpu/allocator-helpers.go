@@ -18,6 +18,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 )
 
@@ -216,10 +217,140 @@ func (a *Accounting) ExclusiveCapacity(pool *CpuMask) (int, bool, error) {
 	return innerCap(caps, pool.Difference(a.exclusive)), true, nil
 }
 
+// ExclusiveBudget is what exclusive takes must leave of one pool in use.
+type ExclusiveBudget struct {
+	// Cpus are the pool's effective CPUs.
+	Cpus *CpuMask
+	// Own is the fewest CPUs the pool's own users and the pools nested in it
+	// need left.
+	Own int
+	// Keep is the fewest CPUs any admissible exclusive take must leave in the
+	// pool, counting every pool: the size of Cpus minus
+	// [Accounting.ExclusiveCapacity] of them.
+	Keep int
+}
+
+// ExclusiveBudgets returns the budget of every pool in use, smallest first,
+// and whether the budgets are exact; if not, Own and Keep are lower bounds.
+// Exactness is that of [Accounting.ExclusiveCapacity]. Nested pools count the
+// same CPUs, so budgets are per-pool limits that do not add up. Nothing is
+// altered.
+func (a *Accounting) ExclusiveBudgets() ([]ExclusiveBudget, bool) {
+	caps, ok := a.exclusiveCaps()
+	slices.SortFunc(caps, func(x, y exclusiveCap) int {
+		if d := cmp.Compare(x.cpus.Size(), y.cpus.Size()); d != 0 {
+			return d
+		}
+		return cmp.Compare(x.cpus.Key(), y.cpus.Key())
+	})
+
+	if !ok {
+		return a.boundBudgets(caps), false
+	}
+	return laminarBudgets(caps), true
+}
+
+// laminarBudgets computes exact budgets from laminar caps sorted smallest
+// first. Bottom-up, inner is what a pool's subtree lets a take have. Top-down,
+// up is the tightest cap of the pools around it.
+func laminarBudgets(caps []exclusiveCap) []ExclusiveBudget {
+	var (
+		n       = len(caps)
+		parent  = make([]int, n)
+		inner   = make([]int, n)
+		took    = make([]int, n)
+		covered = make([]int, n)
+		up      = make([]int, n)
+		subOver = make([]bool, n)
+		over    = false
+	)
+
+	// Supersets of a set form a chain, so the first one is the parent.
+	for i, c := range caps {
+		parent[i] = -1
+		for j := i + 1; j < n; j++ {
+			if c.cpus.IsSubsetOf(caps[j].cpus) {
+				parent[i] = j
+				break
+			}
+		}
+		over = over || c.cap < 0
+	}
+
+	// An overcommitted pool admits no take anywhere around it.
+	for i, c := range caps {
+		size := c.cpus.Size()
+		subOver[i] = subOver[i] || c.cap < 0
+		if !subOver[i] {
+			inner[i] = min(c.cap, took[i]+size-covered[i])
+		}
+		if p := parent[i]; p >= 0 {
+			took[p] += inner[i]
+			covered[p] += size
+			subOver[p] = subOver[p] || subOver[i]
+		}
+	}
+
+	for i := n - 1; i >= 0; i-- {
+		up[i] = math.MaxInt
+		if p := parent[i]; p >= 0 {
+			up[i] = min(up[p], caps[p].cap)
+		}
+	}
+
+	var budgets []ExclusiveBudget
+	for i, c := range caps {
+		if !c.used {
+			continue
+		}
+		size := c.cpus.Size()
+		take := min(inner[i], up[i])
+		if over {
+			take = 0
+		}
+		budgets = append(budgets, ExclusiveBudget{
+			Cpus: c.cpus.Clone(), Own: size - inner[i], Keep: size - take,
+		})
+	}
+
+	return budgets
+}
+
+// boundBudgets computes lower bounds when pools cross. Own comes from the
+// pool's own cap, Keep also from floor(Available/1000).
+func (a *Accounting) boundBudgets(caps []exclusiveCap) []ExclusiveBudget {
+	var (
+		used  []exclusiveCap
+		pools []*CpuMask
+	)
+	for _, c := range caps {
+		if c.used {
+			used = append(used, c)
+			pools = append(pools, c.cpus)
+		}
+	}
+
+	room, _ := a.AvailableEach(pools...)
+
+	budgets := make([]ExclusiveBudget, 0, len(used))
+	for i, c := range used {
+		size := c.cpus.Size()
+		own := size - max(c.cap, 0)
+		budgets = append(budgets, ExclusiveBudget{
+			Cpus: c.cpus.Clone(),
+			Own:  own,
+			Keep: max(own, size-max(room[i], 0)/1000),
+		})
+	}
+
+	return budgets
+}
+
 // exclusiveCap is a constraint set with the most CPUs a take may hit.
 type exclusiveCap struct {
 	cpus *CpuMask
 	cap  int
+	used bool // some pool with these CPUs has users
 }
 
 // exclusiveCaps returns the cap of every distinct effective pool set, and
@@ -250,12 +381,14 @@ func (a *Accounting) exclusiveCaps() ([]exclusiveCap, bool) {
 			c = min(c, eff.Size()-1)
 		}
 
+		used := len(p.users) > 0
 		if i, ok := index[eff.Key()]; ok {
 			caps[i].cap = min(caps[i].cap, c)
+			caps[i].used = caps[i].used || used
 			continue
 		}
 		index[eff.Key()] = len(caps)
-		caps = append(caps, exclusiveCap{cpus: eff, cap: c})
+		caps = append(caps, exclusiveCap{cpus: eff, cap: c, used: used})
 		sets = append(sets, eff)
 	}
 

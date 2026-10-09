@@ -266,6 +266,15 @@
 // set stays admissible also reaches the maximum. An overcommitted accounting
 // admits no take, so the answer there is 0.
 //
+// [Accounting.ExclusiveBudgets] answers per pool in use, from one walk of the
+// tree. Keep is what any take must leave in the pool, and equals its size
+// minus its exclusive capacity. Own counts only the pool's users and nested
+// pools. Keep exceeds Own when an enclosing pool is tighter. For example, an
+// allocator picking CPUs for an exclusive usage can leave Keep CPUs in every
+// pool its pick meets, then confirm the pick with [Accounting.Admits].
+// Budgets are per pool: nested pools count the same CPUs, so they do not add
+// up, and a take changes the budgets of every pool it meets.
+//
 // Exactness is judged on the effective sets. [Accounting.Laminar] reports on
 // the declared sets instead. Declared sets which nest give effective sets which
 // nest, whatever goes exclusive, so a laminar accounting stays exact. The
