@@ -615,3 +615,167 @@ func TestExclusiveCapacityJudgesEffectiveSets(t *testing.T) {
 	require.Equal(t, greedyExclusive(t, a, testAllCpus), n)
 	require.Equal(t, 5, n, "each pool keeps one of its two, 3 idle")
 }
+
+// ownGreedy is greedyExclusive on a fresh accounting bounded by cpus, holding
+// only the users of pools within cpus. It is the ground truth for Own.
+func ownGreedy(t *testing.T, a *Accounting, cpus *CpuMask) int {
+	t.Helper()
+
+	sub := NewAccounting(cpus)
+	for _, u := range a.users {
+		if u.shared.IsEmpty() || !u.pool.eff().IsSubsetOf(cpus) {
+			continue
+		}
+		require.NoError(t, sub.insert(&CpuUsage{
+			ID: u.id, Name: u.name, Shared: u.pool.eff(), Charge: u.charge,
+		}), "copy user %q", u.id)
+	}
+
+	return greedyExclusive(t, sub, cpus)
+}
+
+// requireBudgetsAgree checks every budget against ExclusiveCapacity and both
+// greedy takes. Exact budgets must match them, bounds must not exceed them.
+func requireBudgetsAgree(t *testing.T, a *Accounting, budgets []ExclusiveBudget, exact bool) {
+	t.Helper()
+
+	for _, b := range budgets {
+		size := b.Cpus.Size()
+		take, _ := exclusiveCapacity(t, a, b.Cpus)
+		require.LessOrEqual(t, b.Own, b.Keep, "%s: own over keep", b.Cpus)
+		if exact {
+			require.Equal(t, size-take, b.Keep, "%s: keep vs ExclusiveCapacity", b.Cpus)
+			require.Equal(t, size-greedyExclusive(t, a, b.Cpus), b.Keep,
+				"%s: keep vs greedy", b.Cpus)
+			require.Equal(t, size-ownGreedy(t, a, b.Cpus), b.Own,
+				"%s: own vs greedy on the subtree", b.Cpus)
+		} else {
+			require.LessOrEqual(t, b.Keep, size-greedyExclusive(t, a, b.Cpus),
+				"%s: keep bound over greedy", b.Cpus)
+			require.LessOrEqual(t, b.Own, size-ownGreedy(t, a, b.Cpus),
+				"%s: own bound over greedy", b.Cpus)
+		}
+	}
+}
+
+// budgetsOf maps budgets by their CPUs, for readable expectations.
+func budgetsOf(budgets []ExclusiveBudget) map[string][2]int {
+	out := map[string][2]int{}
+	for _, b := range budgets {
+		out[b.Cpus.String()] = [2]int{b.Own, b.Keep}
+	}
+	return out
+}
+
+// TestExclusiveBudgets pins the stock accounting: only node0 is in use, with
+// 750m on 2 CPUs. The exclusive-only user and the userless bounding set are
+// no pools in use.
+func TestExclusiveBudgets(t *testing.T) {
+	a := testAccounting(t)
+
+	budgets, exact := a.ExclusiveBudgets()
+	require.True(t, exact)
+	require.Equal(t, map[string][2]int{"0-1": {1, 1}}, budgetsOf(budgets))
+	requireBudgetsAgree(t, a, budgets, exact)
+}
+
+// TestExclusiveBudgetsEnclosingPressure pins Own against Keep: each node
+// needs one CPU itself, but the half above them has no CPU to spare.
+func TestExclusiveBudgetsEnclosingPressure(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	for _, u := range []*CpuUsage{
+		{ID: "n0", Name: "n0", Shared: testNode0, Charge: 1000},
+		{ID: "n1", Name: "n1", Shared: testNode1, Charge: 1000},
+		{ID: "half", Name: "half", Shared: NewCpuMask(0, 1, 2, 3), Charge: 1500},
+	} {
+		require.NoError(t, a.insert(u), "add user %q", u.ID)
+	}
+
+	budgets, exact := a.ExclusiveBudgets()
+	require.True(t, exact)
+	require.Equal(t, map[string][2]int{
+		"0-1": {1, 2},
+		"2-3": {1, 2},
+		"0-3": {4, 4},
+	}, budgetsOf(budgets))
+	requireBudgetsAgree(t, a, budgets, exact)
+}
+
+// TestExclusiveBudgetsRoundPerChild pins that children round up separately:
+// 500m on each node needs 2 CPUs of the socket, not 1.
+func TestExclusiveBudgetsRoundPerChild(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	for _, u := range []*CpuUsage{
+		{ID: "n0", Name: "n0", Shared: testNode0, Charge: 500},
+		{ID: "n1", Name: "n1", Shared: testNode1, Charge: 500},
+		{ID: "be", Name: "be", Shared: NewCpuMask(0, 1, 2, 3)},
+	} {
+		require.NoError(t, a.insert(u), "add user %q", u.ID)
+	}
+
+	budgets, exact := a.ExclusiveBudgets()
+	require.True(t, exact)
+	require.Equal(t, map[string][2]int{
+		"0-1": {1, 1},
+		"2-3": {1, 1},
+		"0-3": {2, 2},
+	}, budgetsOf(budgets))
+	requireBudgetsAgree(t, a, budgets, exact)
+}
+
+// TestExclusiveBudgetsOvercommitted pins that no take is admissible, so every
+// pool keeps all its CPUs.
+func TestExclusiveBudgetsOvercommitted(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	for _, u := range []*CpuUsage{
+		{ID: "over", Name: "over", Shared: testNode0, Charge: 2500},
+		{ID: "be", Name: "be", Shared: testNode1},
+	} {
+		require.NoError(t, a.insert(u), "add user %q", u.ID)
+	}
+
+	budgets, _ := a.ExclusiveBudgets()
+	require.Equal(t, map[string][2]int{"0-1": {2, 2}, "2-3": {1, 2}}, budgetsOf(budgets))
+
+	// An overcommitted node leaves its socket nothing to give, though the
+	// other node has a CPU to spare.
+	require.NoError(t, a.insert(&CpuUsage{ID: "s", Name: "s", Shared: NewCpuMask(0, 1, 2, 3)}))
+	budgets, _ = a.ExclusiveBudgets()
+	require.Equal(t, [2]int{4, 4}, budgetsOf(budgets)["0-3"])
+}
+
+// TestExclusiveBudgetsNotLaminar pins the fallback: crossing pools give
+// lower bounds, flagged inexact.
+func TestExclusiveBudgetsNotLaminar(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	for _, u := range []*CpuUsage{
+		{ID: "a", Name: "a", Shared: NewCpuMask(0, 1, 2), Charge: 1500},
+		{ID: "b", Name: "b", Shared: NewCpuMask(2, 3, 4), Charge: 1500},
+	} {
+		require.NoError(t, a.insert(u), "add user %q", u.ID)
+	}
+
+	budgets, exact := a.ExclusiveBudgets()
+	require.False(t, exact)
+	require.Len(t, budgets, 2)
+	requireBudgetsAgree(t, a, budgets, exact)
+}
+
+// TestExclusiveBudgetsBoundUsesAvailable pins that the inexact Keep counts
+// enclosing pressure, which a pool's own cap does not see: a and b cross, and
+// their parent leaves one CPU to take.
+func TestExclusiveBudgetsBoundUsesAvailable(t *testing.T) {
+	a := NewAccounting(testAllCpus)
+	for _, u := range []*CpuUsage{
+		{ID: "a", Name: "a", Shared: NewCpuMask(0, 1, 2), Charge: 500},
+		{ID: "b", Name: "b", Shared: NewCpuMask(2, 3, 4), Charge: 500},
+		{ID: "p", Name: "p", Shared: NewCpuMask(0, 1, 2, 3, 4), Charge: 3000},
+	} {
+		require.NoError(t, a.insert(u), "add user %q", u.ID)
+	}
+
+	budgets, exact := a.ExclusiveBudgets()
+	require.False(t, exact)
+	require.Equal(t, [2]int{1, 2}, budgetsOf(budgets)["0-2"])
+	requireBudgetsAgree(t, a, budgets, exact)
+}
