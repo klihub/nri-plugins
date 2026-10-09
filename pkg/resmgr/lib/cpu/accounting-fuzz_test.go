@@ -629,6 +629,7 @@ func fuzzVerify(t *testing.T, a *Accounting, m *fuzzModel, step int, op string) 
 
 	requireTruncatedBounds(t, a, probes, each, step, op)
 	requireExclusiveCapacity(t, a, probes[step%len(probes)], step, op)
+	requireExclusiveBudgets(t, a, step, op)
 
 	requireChargeIdentity(t, a)
 	requireEffectiveCache(t, a)
@@ -660,6 +661,30 @@ func requireExclusiveCapacity(t *testing.T, a *Accounting, probe *CpuMask, step 
 	avail, _ := a.Available(probe)
 	require.LessOrEqual(t, n, max(avail, 0)/1000,
 		"step %d, %s: exclusive capacity of %s over Available", step, op, probe)
+}
+
+// requireExclusiveBudgets checks every Keep against ExclusiveCapacity, and
+// one rotating budget against both greedy takes.
+func requireExclusiveBudgets(t *testing.T, a *Accounting, step int, op string) {
+	budgets, exact := a.ExclusiveBudgets()
+	if a.Laminar() {
+		require.True(t, exact, "step %d, %s: laminar yet inexact budgets", step, op)
+	}
+	require.Len(t, budgets, len(a.UsedPools()), "step %d, %s: one budget per pool in use", step, op)
+
+	for _, b := range budgets {
+		take, capExact, err := a.ExclusiveCapacity(b.Cpus)
+		require.NoError(t, err)
+		require.Equal(t, exact, capExact, "step %d, %s: exactness of %s", step, op, b.Cpus)
+		if exact {
+			require.Equal(t, b.Cpus.Size()-take, b.Keep,
+				"step %d, %s: keep of %s vs ExclusiveCapacity", step, op, b.Cpus)
+		}
+	}
+
+	if len(budgets) > 0 {
+		requireBudgetsAgree(t, a, budgets[step%len(budgets):step%len(budgets)+1], exact)
+	}
 }
 
 // requireTruncatedBounds checks a traversal cut short at maxImplicitPools
