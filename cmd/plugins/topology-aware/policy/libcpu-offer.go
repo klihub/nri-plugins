@@ -104,7 +104,7 @@ func (s *LibCpuSupply) GetOffer(req *LibCpuRequest) (*LibCpuOffer, error) {
 		}
 
 		for _, exclusive := range alternatives {
-			u := &libcpu.CpuUsage{
+			u = &libcpu.CpuUsage{
 				ID:        req.ctr.GetID(),
 				Name:      req.ctr.GetName(),
 				Exclusive: exclusive,
@@ -128,12 +128,10 @@ func (s *LibCpuSupply) GetOffer(req *LibCpuRequest) (*LibCpuOffer, error) {
 		}
 	}
 
-	/*
-		mem, err := s.lib.policy.getMemOfferForLibCpu(s.node, req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get memory offer for LibCpu request: %w", err)
-		}*/
-	var mem *libmem.Offer
+	mem, err := s.lib.policy.getMemOfferForLibCpu(s.node, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get memory offer for LibCpu request: %w", err)
+	}
 
 	return &LibCpuOffer{
 		req:    req,

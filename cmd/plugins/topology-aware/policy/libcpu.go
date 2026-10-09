@@ -59,7 +59,10 @@ func (lib *LibCpu) TakeCpu(from *libcpu.CpuMask, cnt int, prio CpuPrio) (*libcpu
 		return nil, fmt.Errorf("not enough CPUs available")
 	}
 
-	return lib.policy.cpuAllocator.AllocateCpus(from, cnt, prio.Value().Option())
+	log.Debugf("LibCpu: AllocateCpus: from=%s, cnt=%d, prio=%s", from, cnt, prio)
+	mask, err := lib.policy.cpuAllocator.AllocateCpus(from, cnt, prio.Value().Option())
+	log.Debugf("    => mask=%s, err=%v", mask, err)
+	return mask, err
 }
 
 func (lib *LibCpu) TakeCpuByHints(from *libcpu.CpuMask, cnt int, prio CpuPrio, all topology.Hints) ([]*libcpu.CpuMask, error) {

@@ -183,7 +183,9 @@ func (c *PreferenceCollector) query() error {
 		}
 
 		a.Set(c, pref)
-		log.Debugf("preference set %s = %v", a.Key, pref)
+		if pref != nil {
+			log.Debugf("preference set %s = %v", a.Key, pref)
+		}
 	}
 
 	return nil

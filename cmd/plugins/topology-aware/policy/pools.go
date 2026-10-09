@@ -489,15 +489,18 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 		}
 	}
 
+	lcg, _, err := p.libCpuAllocate(container, poolHint)
+	if err != nil {
+		return nil, policyError("failed to libcpu-allocate resources for %s: %v",
+			container.PrettyName(), err)
+	}
+
 	supply := pool.FreeSupply()
 	g, updates, err := supply.Allocate(request, offer)
 	if err != nil {
 		return nil, policyError("failed to allocate %s from %s: %v",
 			request, supply.DumpAllocatable(), err)
 	}
-
-	log.Infof("       grant: exclusive %q, shared %q, %d updates",
-		g.ExclusiveCPUs(), g.SharedCPUs(), len(updates))
 
 	for id, z := range updates {
 		g, ok := p.allocations.getGrant(id)
@@ -510,6 +513,11 @@ func (p *policy) allocatePool(container cache.Container, poolHint string) (Grant
 				g.GetContainer().SetCpusetMems(z.MemsetString())
 			}
 		}
+	}
+
+	if err := lcg.Verify(g); err != nil {
+		return nil, policyError("failed to verify libcpu grant for %s: %v",
+			container.PrettyName(), err)
 	}
 
 	log.Debugf("allocated req '%s' to memory zone %s", container.PrettyName(),
@@ -579,6 +587,11 @@ func (p *policy) libCpuAllocate(ctr cache.Container, poolHint string) (*LibCpuGr
 	)
 
 	slices.SortFunc(offers, sorter)
+	log.Debugf("libcpu node fitting for %s", ctr.PrettyName())
+	for i, o := range offers {
+		log.Debugf("  - #%d: node %s", i, o.supply.node.Name())
+	}
+
 	picked := offers[0]
 
 	o := picked
@@ -593,8 +606,8 @@ func (p *policy) libCpuAllocate(ctr cache.Container, poolHint string) (*LibCpuGr
 			policyError("failed to commit libcpu offer for %s: %w", ctr.PrettyName(), err)
 	}
 
-	log.Infof("LibCpu-grant: exclusive %q, shared %q, %d CPU updates, %d memory updates",
-		g.ExclusiveCpus(), g.SharedCpus(), len(u.cpu), len(u.mem))
+	/*log.Infof("LibCpu-grant: exclusive %q, shared %q, %d CPU updates, %d memory updates",
+	g.ExclusiveCpus(), g.SharedCpus(), len(u.cpu), len(u.mem))*/
 
 	return g, u, nil
 }

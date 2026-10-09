@@ -26,6 +26,7 @@ type LibCpuGrant struct {
 	lib  *LibCpu
 	node Node
 	ctr  cache.Container
+	opt  *LibCpuOptions
 	cpu  *libcpu.CpuMask
 	mem  libmem.NodeMask
 }
@@ -56,6 +57,7 @@ func (o *LibCpuOffer) Commit() (*LibCpuGrant, *LibCpuUpdates, error) {
 			lib:  o.supply.lib,
 			node: o.supply.node,
 			ctr:  o.req.ctr,
+			opt:  o.req.opt,
 			cpu:  cpu,
 			//mem:  mem,
 		}, &LibCpuUpdates{
@@ -93,4 +95,43 @@ func (g *LibCpuGrant) Release() ([]libcpu.Change, error) {
 	g.cpu = nil
 
 	return updates, nil
+}
+
+func (g *LibCpuGrant) Verify(grant Grant) error {
+	reserved := grant.ReservedCPUs()
+	shared := grant.SharedCPUs()
+	exclusive := grant.ExclusiveCPUs()
+
+	if grant.CPUType() == cpuReserved {
+		log.Infof("LibCpu-grant: reserved %q", g.SharedCpus())
+		log.Infof("       grant: reserved %q", reserved)
+
+		if !g.SharedCpus().Equals(reserved) {
+			return fmt.Errorf("reserved CPU mismatch: libcpu: %s != grant %s",
+				g.SharedCpus(), reserved)
+		}
+		log.Infof("LibCpu-grant: reserved check OK (%s == %s)", g.SharedCpus(), reserved)
+		return nil
+	}
+
+	log.Infof("LibCpu-grant: exclusive %q, shared %q",
+		g.ExclusiveCpus(), g.SharedCpus())
+	log.Infof("       grant: exclusive %q, shared %q",
+		grant.ExclusiveCPUs(), grant.SharedCPUs())
+
+	if !g.ExclusiveCpus().Equals(exclusive) {
+		return fmt.Errorf("exclusive CPU mismatch: libcpu: %s != grant %s",
+			g.ExclusiveCpus(), exclusive)
+		log.Infof("LibCpu-grant: exclusive check OK (%s == %s)",
+			g.ExclusiveCpus(), exclusive)
+	}
+
+	if g.opt.SharedCpu > 0 && !g.SharedCpus().Equals(shared) {
+		return fmt.Errorf("shared CPU mismatch: libcpu: %s != grant %s",
+			g.SharedCpus(), shared)
+		log.Infof("LibCpu-grant: shared check OK (%s == %s)",
+			g.SharedCpus(), shared)
+	}
+
+	return nil
 }

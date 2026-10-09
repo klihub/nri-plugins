@@ -274,11 +274,17 @@ func (p *policy) allocateResources(container cache.Container, poolHint string) e
 			container.PrettyName(), err)
 	}
 
-	_, _, err = p.libCpuAllocate(container, poolHint)
-	if err != nil {
-		return policyError("failed to libcpu-allocate resources for %s: %v",
-			container.PrettyName(), err)
-	}
+	/*
+		lcg, _, err := p.libCpuAllocate(container, poolHint)
+		if err != nil {
+			return policyError("failed to libcpu-allocate resources for %s: %v",
+				container.PrettyName(), err)
+		}
+
+		if err := lcg.Verify(grant); err != nil {
+			return policyError("failed to verify libcpu grant for %s: %v",
+				container.PrettyName(), err)
+		}*/
 
 	p.applyGrant(grant)
 	p.updateSharedAllocations(&grant)

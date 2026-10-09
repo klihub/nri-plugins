@@ -62,6 +62,9 @@ func (p *policy) getMemOfferForLibCpu(pool Node, req *LibCpuRequest) (*libmem.Of
 		mtyp = p.memAllocator.ZoneType(zone)
 	} else {
 		memType := req.opt.MemoryType.MemTypeValue()
+		if memType == 0 {
+			memType = libmem.TypeMaskDRAM
+		}
 		zone = libmem.NewNodeMask(pool.GetMemset(memoryType(memType)).Members()...)
 		mtyp = libmem.TypeMask(memType)
 	}

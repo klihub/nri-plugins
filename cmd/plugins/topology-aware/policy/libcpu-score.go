@@ -45,10 +45,22 @@ func (o *LibCpuOffer) Score(affinities map[int]int32) *LibCpuScore {
 		reserved: DelayedEval(func() int { return o.ReservedCpus().Size() }),
 		isolated: DelayedEval(func() int { return o.IsolatedCpus().Size() }),
 		headroom: DelayedEval(func() int {
-			if h, _, err := o.cpu.Headroom(); err == nil {
-				return h
+			if o.usage == nil {
+				panic("nil o.usage")
 			}
-			return -1
+
+			qry := &libcpu.CpuUsage{
+				ID:        "headroom-query",
+				Name:      "headroom-query",
+				Exclusive: o.usage.Exclusive,
+				Shared:    o.supply.SharedCpus(),
+			}
+			hs, _, err := o.supply.lib.account.Headroom(qry)
+			if err != nil {
+				log.Warnf("failed to get headroom via pool: %v", err)
+				return -1
+			}
+			return hs[0]
 		}),
 		affinity: DelayedEval(func() float64 {
 			return affinityScore(affinities, o.supply.node)
@@ -139,6 +151,8 @@ type LibCpuScoreSortFunc func(a, b *LibCpuScore) int
 
 func LibCpuPoolSorter(fn []LibCpuScoreSortFunc) LibCpuScoreSortFunc {
 	return func(a, b *LibCpuScore) int {
+		log.Debugf("comparing nodes %s and %s",
+			a.supply.node.Name(), b.supply.node.Name())
 		switch {
 		case a == nil && b == nil:
 			return 0
@@ -159,7 +173,18 @@ func LibCpuPoolSorter(fn []LibCpuScoreSortFunc) LibCpuScoreSortFunc {
 	}
 }
 
-func ScoreByCapacity(a, b *LibCpuScore) int {
+func ScoreByCapacity(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by capacity", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by capacity", b.supply.node.Name())
+		default:
+			log.Debugf("- capacity is a TIE")
+		}
+	}()
+
 	switch {
 	case a.req.opt.ReservedCpus.BoolValue():
 		if a.reserved() > b.reserved() {
@@ -180,7 +205,18 @@ func ScoreByCapacity(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByAffinity(a, b *LibCpuScore) int {
+func ScoreByAffinity(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by affinity", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by affinity", b.supply.node.Name())
+		default:
+			log.Debugf("- affinity is a TIE")
+		}
+	}()
+
 	switch {
 	case a.affinity() > b.affinity():
 		return -1
@@ -190,7 +226,18 @@ func ScoreByAffinity(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByHints(a, b *LibCpuScore) int {
+func ScoreByHints(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by hints", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by hints", b.supply.node.Name())
+		default:
+			log.Debugf("- hints is a TIE")
+		}
+	}()
+
 	var (
 		ah, bh             = a.hints(), b.hints()
 		aFull, bFull       = ah[0], bh[0]
@@ -208,11 +255,25 @@ func ScoreByHints(a, b *LibCpuScore) int {
 		if aNonZero < bNonZero {
 			return 1
 		}
+	case aFull == bFull && aNonZero == bNonZero && (aFull != 0 || aNonZero != 0):
+		return ScoreByNodeId(a, b)
+
 	}
 	return 0
 }
 
-func ScoreByMemOfferMatch(a, b *LibCpuScore) int {
+func ScoreByMemOfferMatch(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by MemOfferMatch", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by MemOfferMatch", b.supply.node.Name())
+		default:
+			log.Debugf("- MemOfferMatch is a TIE")
+		}
+	}()
+
 	switch {
 	case a.mem != nil && b.mem == nil:
 		return -1
@@ -257,7 +318,18 @@ func ScoreByMemOfferMatch(a, b *LibCpuScore) int {
 
 }
 
-func ScoreByMemOffer(a, b *LibCpuScore) int {
+func ScoreByMemOffer(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by MemOffe", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by MemOffer", b.supply.node.Name())
+		default:
+			log.Debugf("- MemOffer is a TIE")
+		}
+	}()
+
 	switch {
 	case a.mem != nil && b.mem == nil:
 		return -1
@@ -294,7 +366,18 @@ func ScoreByMemOffer(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByCpuBurstability(a, b *LibCpuScore) int {
+func ScoreByCpuBurstability(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by CPU burstability", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by CPU burstability", b.supply.node.Name())
+		default:
+			log.Debugf("- CPU burstability is a TIE")
+		}
+	}()
+
 	if a.req.ctr.GetQOSClass() != corev1.PodQOSBurstable {
 		return 0
 	}
@@ -341,7 +424,18 @@ func ScoreByCpuBurstability(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByCpuClassHints(a, b *LibCpuScore) int {
+func ScoreByCpuClassHints(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by CPU class hints", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by CPU class hints", b.supply.node.Name())
+		default:
+			log.Debugf("- CPU class hints is a TIE")
+		}
+	}()
+
 	aHints, bHints := a.ccHints(), b.ccHints()
 
 	if aHints == nil || bHints == nil {
@@ -385,7 +479,18 @@ func ScoreByCpuClassHints(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByCpuPrio(a, b *LibCpuScore) int {
+func ScoreByCpuPrio(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by CPU priority", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by CPU priority", b.supply.node.Name())
+		default:
+			log.Debugf("- CPU priority is a TIE")
+		}
+	}()
+
 	var (
 		aCapa = a.prioCapa()
 		bCapa = b.prioCapa()
@@ -402,7 +507,18 @@ func ScoreByCpuPrio(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByNodeDepth(a, b *LibCpuScore) int {
+func ScoreByNodeDepth(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by node depth", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by node depth", b.supply.node.Name())
+		default:
+			log.Debugf("- node depth is a TIE")
+		}
+	}()
+
 	switch {
 	case a.supply.node.RootDistance() > b.supply.node.RootDistance():
 		return -1
@@ -412,7 +528,18 @@ func ScoreByNodeDepth(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByReservedCapacity(a, b *LibCpuScore) int {
+func ScoreByReservedCapacity(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by reserved capacity", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by reserved capacity", b.supply.node.Name())
+		default:
+			log.Debugf("- reserved capacityis a TIE")
+		}
+	}()
+
 	if !a.req.opt.ReservedCpus.BoolValue() {
 		return 0
 	}
@@ -423,7 +550,18 @@ func ScoreByReservedCapacity(a, b *LibCpuScore) int {
 	return bCapa - aCapa
 }
 
-func ScoreByIsolatedCapacity(a, b *LibCpuScore) int {
+func ScoreByIsolatedCapacity(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by isolated capacity", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by isolated capacity", b.supply.node.Name())
+		default:
+			log.Debugf("- isolated capacity is a TIE")
+		}
+	}()
+
 	if !a.req.opt.IsolatedCpus.BoolValue() {
 		return 0
 	}
@@ -442,7 +580,18 @@ func ScoreByIsolatedCapacity(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByNormalCpuPrio(a, b *LibCpuScore) int {
+func ScoreByNormalCpuPrio(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by normal CPU prio", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by normal CPU prio", b.supply.node.Name())
+		default:
+			log.Debugf("- normal CPU prio is a TIE")
+		}
+	}()
+
 	if a.req.opt.CpuPriority.CpuPrioValue() != CpuPrioNormal {
 		return 0
 	}
@@ -461,9 +610,22 @@ func ScoreByNormalCpuPrio(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByHeadroom(a, b *LibCpuScore) int {
+func ScoreByHeadroom(a, b *LibCpuScore) (result int) {
 	aRoom := a.headroom()
 	bRoom := b.headroom()
+
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by headroom (%d vs %d)",
+				a.supply.node.Name(), aRoom, bRoom)
+		case result > 0:
+			log.Debugf("- node %s WINS by headroom (%d vs %d)",
+				b.supply.node.Name(), aRoom, bRoom)
+		default:
+			log.Debugf("- headroom is a TIE (%d vs %d)", aRoom, bRoom)
+		}
+	}()
 
 	if aRoom < 0 || bRoom < 0 {
 		return 0
@@ -472,15 +634,26 @@ func ScoreByHeadroom(a, b *LibCpuScore) int {
 	return bRoom - aRoom
 }
 
-func ScoreByColocation(a, b *LibCpuScore) int {
-	return b.colocated() - a.colocated()
+func ScoreByColocation(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by colocation", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by colocation", b.supply.node.Name())
+		default:
+			log.Debugf("- colocation is a TIE")
+		}
+	}()
+
+	return a.colocated() - b.colocated()
 }
 
-func ScoreReservedContainer(a, b *LibCpuScore) int {
+func ScoreReservedContainer(a, b *LibCpuScore) (result int) {
 	return ScoreByReservedCapacity(a, b)
 }
 
-func ScoreNormalContainer(a, b *LibCpuScore) int {
+func ScoreNormalContainer(a, b *LibCpuScore) (result int) {
 	if v := ScoreByIsolatedCapacity(a, b); v != 0 {
 		return v
 	}
@@ -506,7 +679,18 @@ func ScoreNormalContainer(a, b *LibCpuScore) int {
 	return 0
 }
 
-func ScoreByNodeId(a, b *LibCpuScore) int {
+func ScoreByNodeId(a, b *LibCpuScore) (result int) {
+	defer func() {
+		switch {
+		case result < 0:
+			log.Debugf("- node %s WINS by node ID", a.supply.node.Name())
+		case result > 0:
+			log.Debugf("- node %s WINS by node ID", b.supply.node.Name())
+		default:
+			log.Debugf("- node ID (what !?!)")
+		}
+	}()
+
 	return a.supply.node.NodeID() - b.supply.node.NodeID()
 }
 

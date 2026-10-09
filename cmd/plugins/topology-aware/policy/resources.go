@@ -629,7 +629,10 @@ func (cs *supply) Reserve(g Grant, o *libmem.Offer) (map[string]libmem.NodeMask,
 
 // takeCPUs takes up to cnt CPUs, removing them from the given set.
 func (cs *supply) takeCPUs(from *libcpu.CpuMask, cnt int, prio cpuPrio) (*libcpu.CpuMask, error) {
-	return cs.node.Policy().cpuAllocator.AllocateCpus(from, cnt, prio.Option())
+	log.Debugf("supply: AllocateCpus: from=%s, cnt=%d, prio=%s", from, cnt, prio)
+	mask, err := cs.node.Policy().cpuAllocator.AllocateCpus(from, cnt, prio.Option())
+	log.Debugf("    => mask=%s, err=%v", mask, err)
+	return mask, err
 }
 
 // takeCPUsByHints tries to allocate isolated or exclusive CPUs by topology hints.
