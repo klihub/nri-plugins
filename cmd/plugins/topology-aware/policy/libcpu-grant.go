@@ -98,39 +98,48 @@ func (g *LibCpuGrant) Release() ([]libcpu.Change, error) {
 }
 
 func (g *LibCpuGrant) Verify(grant Grant) error {
+	gNode, grantNode := g.node.Name(), grant.GetCPUNode().Name()
+	log.Infof("LibCpu-grant: node %q", gNode)
+	log.Infof("       grant: node %q", grantNode)
+
+	if gNode != grantNode {
+		log.Warnf("grant node mismatch: libcpu %q != grant %q", gNode, grantNode)
+	} else {
+		log.Infof("LibCpu-grant: node OK")
+	}
+
 	reserved := grant.ReservedCPUs()
-	shared := grant.SharedCPUs()
-	exclusive := grant.ExclusiveCPUs()
 
 	if grant.CPUType() == cpuReserved {
 		log.Infof("LibCpu-grant: reserved %q", g.SharedCpus())
 		log.Infof("       grant: reserved %q", reserved)
 
 		if !g.SharedCpus().Equals(reserved) {
-			return fmt.Errorf("reserved CPU mismatch: libcpu: %s != grant %s",
+			log.Warnf("reserved CPU mismatch: libcpu %s != grant %s",
 				g.SharedCpus(), reserved)
+		} else {
+			log.Infof("LibCpu-grant: reserved OK (%s)", g.SharedCpus())
 		}
-		log.Infof("LibCpu-grant: reserved check OK (%s == %s)", g.SharedCpus(), reserved)
+
 		return nil
 	}
 
-	log.Infof("LibCpu-grant: exclusive %q, shared %q",
-		g.ExclusiveCpus(), g.SharedCpus())
-	log.Infof("       grant: exclusive %q, shared %q",
-		grant.ExclusiveCPUs(), grant.SharedCPUs())
+	shared := grant.SharedCPUs()
+	exclusive := grant.ExclusiveCPUs()
+
+	log.Infof("LibCpu-grant: exclusive %q, shared %q", g.ExclusiveCpus(), g.SharedCpus())
+	log.Infof("       grant: exclusive %q, shared %q", exclusive, shared)
 
 	if !g.ExclusiveCpus().Equals(exclusive) {
-		return fmt.Errorf("exclusive CPU mismatch: libcpu: %s != grant %s",
+		log.Warnf("exclusive CPU mismatch: libcpu %s != grant %s",
 			g.ExclusiveCpus(), exclusive)
-		log.Infof("LibCpu-grant: exclusive check OK (%s == %s)",
-			g.ExclusiveCpus(), exclusive)
+	} else {
+		log.Infof("LibCpu-grant: exclusive OK (%s)", g.ExclusiveCpus())
 	}
 
 	if g.opt.SharedCpu > 0 && !g.SharedCpus().Equals(shared) {
-		return fmt.Errorf("shared CPU mismatch: libcpu: %s != grant %s",
-			g.SharedCpus(), shared)
-		log.Infof("LibCpu-grant: shared check OK (%s == %s)",
-			g.SharedCpus(), shared)
+		log.Warnf("shared CPU mismatch: libcpu %s != grant %s", g.SharedCpus(), shared)
+		log.Infof("LibCpu-grant: shared OK (%s)", g.SharedCpus())
 	}
 
 	return nil

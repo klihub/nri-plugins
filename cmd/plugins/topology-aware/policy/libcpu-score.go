@@ -528,6 +528,18 @@ func ScoreByNodeDepth(a, b *LibCpuScore) (result int) {
 	return 0
 }
 
+func ScoreForceReservedToRoot(a, b *LibCpuScore) (result int) {
+	switch {
+	case !a.req.opt.ReservedCpus.BoolValue():
+		return 0
+	case a.supply.node.IsRootNode() && !b.supply.node.IsRootNode():
+		return -1
+	case !a.supply.node.IsRootNode() && b.supply.node.IsRootNode():
+		return 1
+	}
+	return 0
+}
+
 func ScoreByReservedCapacity(a, b *LibCpuScore) (result int) {
 	defer func() {
 		switch {

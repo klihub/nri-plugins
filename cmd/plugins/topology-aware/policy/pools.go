@@ -571,7 +571,8 @@ func (p *policy) libCpuAllocate(ctr cache.Container, poolHint string) (*LibCpuGr
 
 	sorter := LibCpuPoolSorter(
 		[]LibCpuScoreSortFunc{
-			ScoreReservedContainer,
+			ScoreForceReservedToRoot,
+			//ScoreReservedContainer,
 			ScoreByCapacity,
 			ScoreByAffinity,
 			ScoreByHints,

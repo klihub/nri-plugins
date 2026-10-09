@@ -76,6 +76,11 @@ func (s *LibCpuSupply) PickExclusiveCpus(req *LibCpuRequest) ([]*libcpu.CpuMask,
 		hints = req.ctr.GetTopologyHints()
 	}
 
+	budgets, exact := s.lib.account.ExclusiveBudgets()
+	if !exact {
+		log.Warnf("libcpu: exclusive CPU budgets are NOT EXACT")
+	}
+
 	if req.opt.IsolatedCpus.BoolValue() {
 		free := s.IsolatedCpus().Difference(s.lib.ExclusiveCpus())
 		if free.Size() < req.opt.ExclusiveCpu {
@@ -99,12 +104,38 @@ func (s *LibCpuSupply) PickExclusiveCpus(req *LibCpuRequest) ([]*libcpu.CpuMask,
 
 	free := s.SharedCpus().Difference(s.lib.ExclusiveCpus())
 
-	log.Debugf("libcpu: trying to pick %d exclusive CPUs from %s pool %s (free %s)",
+	log.Debugf("libcpu: trying to pick %d shared CPUs from %s pool %s (free %s)",
 		req.opt.ExclusiveCpu, s.node.Name(), s.SharedCpus(), free)
+
+	keep := libcpu.NewCpuMask()
+	for _, b := range budgets {
+		log.Debugf("libcpu: exclusive budget of %s: own: %d, keep: %d",
+			b.Cpus, b.Own, b.Keep)
+
+		switch {
+		case b.Own == 0:
+			continue
+		case b.Cpus.Difference(free.Difference(keep)).Size() >= b.Own:
+			continue
+		}
+
+		more := b.Own - b.Cpus.Intersection(keep).Size()
+		cpus, err := s.lib.TakeCpu(
+			b.Cpus.Intersection(free.Difference(keep)),
+			more,
+			CpuPrioNone,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("pool %s run out of budget", b.Cpus)
+		}
+
+		log.Debugf("libcpu: keeping more CPUs %s (total: %s)...", cpus.Union(keep))
+		keep = keep.Union(cpus)
+	}
 
 	if free.Size() >= req.opt.ExclusiveCpu {
 		cpus, err := s.lib.TakeCpuByHints(
-			free,
+			free.Difference(keep),
 			req.opt.ExclusiveCpu,
 			req.opt.CpuPriority.CpuPrioValue(),
 			hints,
