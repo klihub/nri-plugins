@@ -103,7 +103,7 @@ func (g *LibCpuGrant) Verify(grant Grant) error {
 	log.Infof("       grant: node %q", grantNode)
 
 	if gNode != grantNode {
-		log.Warnf("grant node mismatch: libcpu %q != grant %q", gNode, grantNode)
+		log.Warnf("grant: node mismatch: libcpu %q != grant %q", gNode, grantNode)
 	} else {
 		log.Infof("LibCpu-grant: node OK")
 	}

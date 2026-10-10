@@ -107,6 +107,7 @@ func (s *LibCpuSupply) PickExclusiveCpus(req *LibCpuRequest) ([]*libcpu.CpuMask,
 	log.Debugf("libcpu: trying to pick %d shared CPUs from %s pool %s (free %s)",
 		req.opt.ExclusiveCpu, s.node.Name(), s.SharedCpus(), free)
 
+	take := libcpu.NewCpuMask()
 	keep := libcpu.NewCpuMask()
 	for _, b := range budgets {
 		log.Debugf("libcpu: exclusive budget of %s: own: %d, keep: %d",
@@ -120,7 +121,21 @@ func (s *LibCpuSupply) PickExclusiveCpus(req *LibCpuRequest) ([]*libcpu.CpuMask,
 		}
 
 		more := b.Own - b.Cpus.Intersection(keep).Size()
-		cpus, err := s.lib.TakeCpu(
+		took, err := s.lib.TakeCpu(
+			b.Cpus.Intersection(free.Difference(keep)),
+			b.Cpus.Intersection(free.Difference(keep)).Size()-more,
+			CpuPrioNone,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to take %d cpus from pool %s", b.Cpus)
+		}
+
+		take = take.Union(took)
+		keep = keep.Union(take.Intersection(b.Cpus))
+		log.Debugf("libcpu: keeping CPUs %s, slicable %s...",
+			keep, take.Intersection(free).Difference(keep))
+
+		/*cpus, err := s.lib.TakeCpu(
 			b.Cpus.Intersection(free.Difference(keep)),
 			more,
 			CpuPrioNone,
@@ -131,6 +146,8 @@ func (s *LibCpuSupply) PickExclusiveCpus(req *LibCpuRequest) ([]*libcpu.CpuMask,
 
 		log.Debugf("libcpu: keeping more CPUs %s (total: %s)...", cpus.Union(keep))
 		keep = keep.Union(cpus)
+		*/
+
 	}
 
 	if free.Size() >= req.opt.ExclusiveCpu {

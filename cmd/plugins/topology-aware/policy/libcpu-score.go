@@ -151,8 +151,19 @@ type LibCpuScoreSortFunc func(a, b *LibCpuScore) int
 
 func LibCpuPoolSorter(fn []LibCpuScoreSortFunc) LibCpuScoreSortFunc {
 	return func(a, b *LibCpuScore) int {
-		log.Debugf("comparing nodes %s and %s",
-			a.supply.node.Name(), b.supply.node.Name())
+
+		switch {
+		case a != nil && b != nil:
+			log.Debugf("comparing nodes %s and %s",
+				a.supply.node.Name(), b.supply.node.Name())
+		case a == nil && b != nil:
+			log.Debugf("comparing nodes nil and %s",
+				b.supply.node.Name())
+		case a != nil && b == nil:
+			log.Debugf("comparing nodes %s and nil",
+				a.supply.node.Name())
+		}
+
 		switch {
 		case a == nil && b == nil:
 			return 0
@@ -531,6 +542,18 @@ func ScoreByNodeDepth(a, b *LibCpuScore) (result int) {
 func ScoreForceReservedToRoot(a, b *LibCpuScore) (result int) {
 	switch {
 	case !a.req.opt.ReservedCpus.BoolValue():
+		return 0
+	case a.supply.node.IsRootNode() && !b.supply.node.IsRootNode():
+		return -1
+	case !a.supply.node.IsRootNode() && b.supply.node.IsRootNode():
+		return 1
+	}
+	return 0
+}
+
+func ScoreForcePreservedToRoot(a, b *LibCpuScore) (result int) {
+	switch {
+	case !a.req.opt.PreserveCpu.BoolValue():
 		return 0
 	case a.supply.node.IsRootNode() && !b.supply.node.IsRootNode():
 		return -1

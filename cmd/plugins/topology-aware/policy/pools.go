@@ -561,7 +561,10 @@ func (p *policy) libCpuAllocate(ctr cache.Container, poolHint string) (*LibCpuGr
 			offers = []*LibCpuScore{o.Score(affinities)}
 			break
 		}
-		offers = append(offers, o.Score(affinities))
+		score := o.Score(affinities)
+		if score != nil {
+			offers = append(offers, score)
+		}
 	}
 
 	if len(offers) == 0 {
@@ -572,6 +575,7 @@ func (p *policy) libCpuAllocate(ctr cache.Container, poolHint string) (*LibCpuGr
 	sorter := LibCpuPoolSorter(
 		[]LibCpuScoreSortFunc{
 			ScoreForceReservedToRoot,
+			ScoreForcePreservedToRoot,
 			//ScoreReservedContainer,
 			ScoreByCapacity,
 			ScoreByAffinity,
