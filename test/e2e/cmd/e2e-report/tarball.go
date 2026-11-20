@@ -99,16 +99,10 @@ type fileSource struct {
 }
 
 func newFileSource(dir *os.Root, p string) (*fileSource, error) {
-	var (
-		info os.FileInfo
-		err  error
-	)
-
-	if dir != nil {
-		info, err = dir.Stat(p)
-	} else {
-		info, err = os.Stat(p)
+	if dir == nil {
+		return nil, fmt.Errorf("nil root given for %q", p)
 	}
+	info, err := dir.Stat(p)
 	if err != nil {
 		return nil, err
 	}
@@ -193,13 +187,25 @@ func openTarball(src source, name string) (*Tarball, error) {
 }
 
 // openArchive reads the listing of the archive of a run, if it has one.
-func openArchive(dir string) (*Tarball, error) {
-	src, err := newFileSource(nil, filepath.Join(dir, runTar))
+func openArchive(dir string) (*Tarball, *os.Root, error) {
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("failed to open archive to %q: %w", dir, err)
 	}
 
-	return openTarball(src, runTar)
+	src, err := newFileSource(root, runTar)
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+
+	t, err := openTarball(src, runTar)
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, fmt.Errorf("failed to read archive %q: %w", runTar, err)
+	}
+
+	return t, root, nil
 }
 
 // member is the name a header goes by, and whether it is a member we serve.

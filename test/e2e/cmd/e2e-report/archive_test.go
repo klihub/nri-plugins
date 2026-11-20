@@ -75,10 +75,11 @@ func TestPackRun(t *testing.T) {
 		}
 	}
 
-	archive, err := openArchive(dir)
+	archive, root, err := openArchive(dir)
 	if err != nil {
 		t.Fatalf("failed to open the archive: %v", err)
 	}
+	defer func() { _ = root.Close() }()
 
 	for name, data := range files {
 		packed := !slices.Contains(unpacked, name)
@@ -128,10 +129,11 @@ func TestArchiveList(t *testing.T) {
 		t.Fatalf("failed to pack: %v", err)
 	}
 
-	archive, err := openArchive(dir)
+	archive, root, err := openArchive(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = root.Close() }()
 
 	for _, tc := range []struct {
 		dir   string
@@ -183,10 +185,11 @@ func TestArchiveOpenMissing(t *testing.T) {
 		t.Fatalf("failed to pack: %v", err)
 	}
 
-	archive, err := openArchive(dir)
+	archive, root, err := openArchive(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = root.Close() }()
 
 	if _, err := archive.Open("no/such/member"); err == nil {
 		t.Errorf("opening a member which is not there did not fail")
@@ -194,7 +197,7 @@ func TestArchiveOpenMissing(t *testing.T) {
 }
 
 func TestOpenArchiveWithout(t *testing.T) {
-	if _, err := openArchive(t.TempDir()); err == nil {
+	if _, _, err := openArchive(t.TempDir()); err == nil {
 		t.Errorf("opening the archive of an unpacked run did not fail")
 	}
 }
@@ -209,10 +212,11 @@ func TestArchiveIgnoresOddMembers(t *testing.T) {
 		{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0o777},
 	})
 
-	archive, err := openArchive(dir)
+	archive, root, err := openArchive(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = root.Close() }()
 
 	if got, expected := archive.names, []string{"escape", "sane"}; !slices.Equal(got, expected) {
 		t.Errorf("members are %v, expected %v", got, expected)
