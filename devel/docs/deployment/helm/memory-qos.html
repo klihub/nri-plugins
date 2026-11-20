@@ -4,7 +4,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Memory-QoS Plugin &mdash; NRI Plugins v0.13.1-202-g32d3c0f9 documentation</title>
+  <title>Memory-QoS Plugin &mdash; NRI Plugins v0.13.1-453-gb7c9e768 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=19f00094" />
 
@@ -15,7 +15,7 @@
   
         <script src="../../../_static/jquery.js?v=5d32c60e"></script>
         <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-        <script src="../../../_static/documentation_options.js?v=c91de231"></script>
+        <script src="../../../_static/documentation_options.js?v=698c34cc"></script>
         <script src="../../../_static/doctools.js?v=9a2dae69"></script>
         <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../_static/js/theme.js"></script>
@@ -209,6 +209,14 @@ customize with their own values, along with the default values.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">image.pullPolicy</span></code></p></td>
 <td><p>Always</p></td>
 <td><p>image pull policy</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">config.classes</span></code></p></td>
+<td><p>bronze (0.5), silver (0.2)</p></td>
+<td><p>Memory QoS classes selectable via <code class="docutils literal notranslate"><span class="pre">class.memory-qos.nri.io</span></code>. Each entry has a <code class="docutils literal notranslate"><span class="pre">name</span></code> and a <code class="docutils literal notranslate"><span class="pre">swaplimitratio</span></code> from 0 to 1. A custom list replaces the defaults.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">config.unifiedAnnotations</span></code></p></td>
+<td><p>[memory.swap.max, memory.high]</p></td>
+<td><p>memory.* parameters that pods may set directly via <code class="docutils literal notranslate"><span class="pre">&lt;parameter&gt;.memory-qos.nri.io</span></code> annotations</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resources.cpu</span></code></p></td>
 <td><p>10m</p></td>
