@@ -31,6 +31,14 @@ func UncompressTbz2(archive string, dir string) error {
 	}
 	defer file.Close() // nolint:errcheck
 
+	// We extract the archive via a root. It refuses to create an entry
+	// outside dir or follow a symlink out of dir.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close() // nolint:errcheck
+
 	data := bzip2.NewReader(file)
 	tr := tar.NewReader(data)
 	for {
@@ -44,13 +52,13 @@ func UncompressTbz2(archive string, dir string) error {
 		switch header.Typeflag {
 		case tar.TypeDir:
 			// Create a directory.
-			err = os.MkdirAll(path.Join(dir, header.Name), 0755)
+			err = root.MkdirAll(header.Name, 0755)
 			if err != nil {
 				return err
 			}
 		case tar.TypeReg:
 			// Create a regular file.
-			targetFile, err := os.Create(path.Join(dir, header.Name))
+			targetFile, err := root.Create(header.Name)
 			if err != nil {
 				return err
 			}
@@ -62,11 +70,11 @@ func UncompressTbz2(archive string, dir string) error {
 			}
 		case tar.TypeSymlink:
 			// Create a symlink and all the directories it needs.
-			err = os.MkdirAll(path.Dir(path.Join(dir, header.Name)), 0755)
+			err = root.MkdirAll(path.Dir(header.Name), 0755)
 			if err != nil {
 				return err
 			}
-			err := os.Symlink(header.Linkname, path.Join(dir, header.Name))
+			err := root.Symlink(header.Linkname, header.Name)
 			if err != nil {
 				return err
 			}
